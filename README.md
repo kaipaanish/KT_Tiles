@@ -218,3 +218,12 @@ Where the brief was ambiguous, these are the choices made.
 34. **The minimum-cut slider runs from 10% to 50% of a tile.** 33% means exactly a third, the default.
 35. **Suggestions appear when asked for** ("Suggest alignment") and keep updating while the tab is open. The option matching the current layout is marked "Current".
 36. **The Count tab's area is the tiled area** (what the tiles cover), not the area of the tiles bought.
+
+**Floors**
+
+37. **One design holds a wall and a floor.** Wall | Floor switches between them without losing either. The switch is part of undo, like every other change saved in the design.
+38. **A floor is drawn from above, with no bands.**
+    - Row mode is switched off on floors, and the floor's design is picked in the Design tab.
+    - Its second dimension is its length. Alignment, snapping and suggestions work on both axes.
+    - The default floor is 1800 × 2400 mm in Grey anti-skid, centred on a joint both ways.
+39. **Square tiles turn in quarter turns everywhere**, so floor tiles (300 × 300 mm) can be turned 90° in Tile mode.

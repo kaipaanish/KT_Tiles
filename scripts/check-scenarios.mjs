@@ -316,6 +316,70 @@ export const scenarios = [
     },
   },
 
+  // ---- Floor mode: floor series and tiles only, both axes, square tiles turn 90°
+  {
+    name: 'floor-mode',
+    path: './?debug=1&tab=design',
+    async run(page, { device, shot }) {
+      const wallBefore = (await state(page)).doc.wall;
+      await press(page, device, '.surface-toggle >> text=Floor');
+      await expectState(page, (s) => s.doc.active === 'floor', 'floor shown', (s) => s.doc.active);
+      await pause(150);
+      const series = await page.locator('.series-choice .series-name').allTextContents();
+      assert(series.join() === 'Demo Floor', `only floor series offered, got ${series}`);
+      await press(page, device, '.design-choice:has-text("Checkerboard")');
+      await expectState(page, (s) => s.doc.floor.layout.designId === 'floor-checker', 'checkerboard chosen', (s) => s.doc.floor.layout);
+      await shot('checkerboard');
+
+      await press(page, device, '.sheet-tab:has-text("Tiles")');
+      await pause(150);
+      const groups = await page.locator('.tab-tiles .tab-heading').allTextContents();
+      const tiles = await page.locator('.tab-tiles .tile-name').allTextContents();
+      assert(groups.join() === 'Floor tiles' && tiles.join() === 'Grey anti-skid,Beige anti-skid', `floor tiles only, got ${groups} / ${tiles}`);
+
+      // Pattern drag moves both axes; 150 mm right and 150 mm up lands on centre-tile both ways.
+      await press(page, device, '.sheet-tab:has-text("Design")');
+      await press(page, device, '.design-choice:has-text("Grey")');
+      await expectState(page, (s) => s.doc.floor.layout.designId === 'floor-grey-plain', 'grey floor', (s) => s.doc.floor.layout);
+      const scale = await viewScale(page);
+      const from = await screenOf(page, 900, 1200);
+      const input = await pointer(page, device);
+      await input.down(from);
+      await input.move({ x: from.x + 150 * scale, y: from.y - 150 * scale }, 10);
+      await shot('dragging');
+      await input.up();
+      await expectState(
+        page,
+        (s) => s.doc.floor.alignment.x.mode === 'centre-tile' && s.doc.floor.alignment.y.mode === 'centre-tile',
+        'floor drag snaps on both axes',
+        (s) => s.doc.floor.alignment,
+      );
+
+      await press(page, device, '.sheet-tab:has-text("Align")');
+      await press(page, device, 'button:has-text("Suggest alignment")');
+      await page.locator('.suggestion').first().waitFor({ state: 'visible', timeout: 3000 });
+      const labels = await page.locator('.suggestion-label').allTextContents();
+      assert(labels.some((l) => l.includes('both ways')) && labels.some((l) => l.includes('across')), `floor suggestions cover both axes, got ${labels.slice(0, 4)}`);
+
+      await press(page, device, '.mode-switch button:has-text("Tile")');
+      const cell = await pieceCentre(page, 2, 2);
+      await input.tap(cell);
+      await pause(350);
+      await input.tap(cell);
+      await expectState(page, (s) => s.doc.floor.overrides['2,2']?.rotation === 90, 'square floor tiles turn 90°', (s) => s.doc.floor.overrides);
+
+      await press(page, device, '.sheet-tab:has-text("Count")');
+      await pause(150);
+      const total = await page.locator('.count-table tfoot td').allTextContents();
+      assert(total.join() === '35,28,63,67,7', `1800 × 2400 floor, centre-tile both ways: 35 full + 28 cut, 67 tiles, 7 boxes; got ${total}`);
+      await shot('count');
+
+      await press(page, device, '.surface-toggle >> text=Wall');
+      const wallAfter = (await expectState(page, (s) => s.doc.active === 'wall', 'back to the wall', (s) => s.doc.active)).doc.wall;
+      assert(JSON.stringify(wallAfter) === JSON.stringify(wallBefore), 'the wall design is kept while working on the floor');
+    },
+  },
+
   // ---- Wall | Floor and the size editor
   {
     name: 'surface-and-size',

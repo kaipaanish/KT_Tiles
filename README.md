@@ -4,19 +4,13 @@ A salesperson or customer lays out a bathroom wall or floor with a KT Ceramics t
 
 This is step 1 of 3:
 
-1. **Pattern designer** for a flat wall or floor, seen straight on (this repo, in progress).
+1. **Pattern designer** for a flat wall or floor, seen straight on (this repo).
 2. Photo mode: the same layout drawn onto a photo of the room, in perspective.
 3. Live AR on Android Chrome (WebXR).
 
 The layout engine has no DOM or canvas code, so steps 2 and 3 can reuse its output unchanged.
 
-**Status:** these are done:
-- the layout engine and demo tile textures
-- the canvas renderer and gestures
-- the Pattern / Row / Tile modes, with undo/redo
-- the Design / Tiles / Align / Count panels
-
-Floor-mode polish, sharing and autosave are next.
+**Status:** step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
 
 ## Using it
 
@@ -41,6 +35,12 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 | **Tiles** | The series' tiles grouped by role. Tap one to put it in the selected band (Row mode or the band list), or in the selected tile (Tile mode). |
 | **Align** | Alignment across and up (or along, for floors), a custom offset or bottom-row height, the smallest acceptable cut, and **Suggest alignment**. Suggestions are ranked by the chosen priority (avoid slivers, or centre the motif); tap one to apply it. Also shows the current cut at each edge. |
 | **Count** | Full, cut, pieces, tiles to buy and boxes per tile, with totals, tiled area (m² and sq ft) and the allowance. |
+
+**Share** (top bar) makes a picture of the wall or floor with its dimensions. Under it is a summary: series, size, band heights from the floor, tiles and boxes per tile, totals and area.
+- On a phone the share sheet opens with the picture, ready for WhatsApp.
+- Where the browser can't share files, the picture downloads instead.
+
+**Autosave**: the design is kept in the browser, and it reopens as you left it.
 
 ## Run and test
 
@@ -82,15 +82,18 @@ These open the app on a particular design, for demos and checks:
 | `mode` | `row` | Start in Pattern, Row or Tile mode |
 | `tab` | `align` | Open the panel on a tab |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
+| `fresh` | `1` | Start from the default design instead of the autosaved one |
+
+A link with any design parameter (`series`, `preset`, `design`, `surface`, `w`, `h`, `th`, `x`, `y` or `fresh`) opens that design instead of the autosaved one.
 
 ## How the code is organised
 
 ```
 src/engine/    pure layout logic: no DOM or canvas, fully unit tested
 src/designs/   series.json (tiles, series, designs, presets) and texture painters
-src/render/    canvas renderer and texture cache
-src/state/     the design document, pure edit actions, store with undo/redo; autosave (coming)
-src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs
+src/render/    canvas renderer, texture cache, previews, the shared picture
+src/state/     the design document, pure edit actions, store with undo/redo, autosave
+src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs, share
 scripts/       browser check (development only)
 ```
 
@@ -135,7 +138,14 @@ Keep the three demo series: the engine tests use them.
 
 ## Deploying to Vercel
 
-Push the repo to GitHub, then import it in Vercel with the **Vite** preset. The build command is `npm run build` and the output directory is `dist`. After that, every push redeploys the site.
+1. Push the repo to GitHub.
+2. In Vercel, choose **Add New → Project** and import the repository.
+3. Vercel detects the **Vite** preset. Keep the build command (`npm run build`) and the output directory (`dist`), then deploy.
+4. Every push to the main branch redeploys the site, and other branches get preview links.
+
+The site is static, so it needs no environment variables, server or API keys. The build runs the type checks first, so a type error stops a bad deploy. The browser-check tool is never part of the build.
+
+Sharing files to WhatsApp needs HTTPS, which Vercel provides.
 
 ## Decisions
 
@@ -227,3 +237,32 @@ Where the brief was ambiguous, these are the choices made.
     - Its second dimension is its length. Alignment, snapping and suggestions work on both axes.
     - The default floor is 1800 × 2400 mm in Grey anti-skid, centred on a joint both ways.
 39. **Square tiles turn in quarter turns everywhere**, so floor tiles (300 × 300 mm) can be turned 90° in Tile mode.
+
+**Share and autosave**
+
+40. **The shared picture is 1400 px wide.** It is laid out at 700 px and drawn at 2×, so its labels stay readable on a phone.
+    - It always shows dimensions, and uses the current view toggles for cuts, repeat and motifs.
+    - The summary wraps between tiles, never in the middle of one.
+    - Cancelling the share sheet does nothing more. Any other share failure falls back to a download.
+41. **Autosave** keeps the design in `localStorage` 0.4 s after each change, and immediately when the page is hidden. The view toggles are kept too.
+    - On load, the saved design is checked against the current catalog and the rules. If anything no longer fits, the app starts fresh. Examples: a removed series, band rows that don't fit a design, or a rotation a tile can't take.
+    - Settings added in later versions take their defaults.
+    - If storage is blocked or full, nothing breaks; the design just isn't kept.
+42. **A link with design parameters wins over the autosaved design.** Autosave then keeps working on the linked design. `?fresh=1` starts from the default.
+
+## Step 1 checklist
+
+What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Opens with a "Highlighter band" wall in Demo Ivory Bloom, with no setup | Done | Browser check `opening-wall`; `pattern-drag` asserts the opening design |
+| Pattern drag shifts the layout with snapping, and the edge-cut labels update live | Done | Snapping unit tests; browser check `pattern-drag` (mid-drag screenshot, snaps to centre-joint, undo/redo) |
+| The medallion forms around its shared corner; the Ivory Bloom sprig continues across the HL-A/HL-B joint | Done | Engine tests on the corner rotations and on HL-B below HL-A; zoomed screenshots `medallion-joint` and `sprig-joint` |
+| Bands reorder by dragging; tiles rotate and swap in Tile mode; rectangular tiles never turn 90° | Done | Browser checks `row-mode` and `tile-mode` (touch and mouse); unit tests reject 90° on 300 × 450 tiles |
+| Switching to Floor changes the series and tile menu to floor tiles only | Done | Browser check `floor-mode` |
+| "Suggest alignment" shows the slivers-versus-centred-motif trade-off for the medallion on a 2450 mm wall | Done | Suggestion unit tests; browser check `align-tab`, which also flips the priority |
+| The Count tab matches the unit tests | Done | Browser check `count-tab`: 48 pieces / 51 tiles / 7 boxes left-aligned, and 42 full + 12 cut / 57 tiles / 8 boxes centred, the same as the engine tests |
+| Share produces a PNG and works on an Android phone | PNG verified; **phone still to try** | Browser checks `share-download` (a real PNG file) and `share-api` (the PNG file reaches the Web Share API). Sharing to WhatsApp needs a real Android phone on the deployed HTTPS site. |
+| All engine tests pass | Done | `npm test`: 97 tests (engine and state) |
+| Dragging stays smooth on a mid-range Android phone | **Phone still to try** | Textures are built once and cached at several sizes, and frames are drawn only on change. Smoothness can't be judged in headless Chrome. |

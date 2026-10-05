@@ -13,6 +13,7 @@ import { toSurface, type Appearance, type Overlay } from '../render/renderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
 import { activePlan, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
+import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, VIEW_KEY, writeStorage } from '../state/persist';
 import { Store, type Mode, type Tab, type Toggles, type UiState } from '../state/store';
 import { BandHandles } from './bandHandles';
 import { CanvasView } from './canvasView';
@@ -21,12 +22,14 @@ import { designChoices } from './designPicker';
 import { h } from './dom';
 import { attachGestures, type Drag, type PointerPoint } from './gestures';
 import { Popover } from './popover';
+import { sharePicture } from './share';
 import { Sheet } from './sheet';
 import { alignTab } from './tabs/align';
 import type { TabContext } from './tabs/context';
 import { countTab } from './tabs/count';
 import { designTab } from './tabs/design';
 import { tilesTab } from './tabs/tiles';
+import { clearThumbs } from './thumbs';
 import { TopBar } from './topbar';
 import { fitView, panView, viewCentredOn, zoomAround, type Insets } from './viewport';
 
@@ -45,8 +48,12 @@ const MAGNET_PX = 14;
 type Cell = { col: number; row: number };
 const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a && !!b && a.col === b.col && a.row === b.row;
 
-function initialUi(params: URLSearchParams): UiState {
-  const flag = (key: string, fallback: boolean) => (params.has(key) ? params.get(key) !== '0' : fallback);
+/** URL parameters that describe a design: a link with any of them opens that design, not the saved one. */
+const DESIGN_PARAMS = ['surface', 'series', 'preset', 'design', 'w', 'h', 'th', 'x', 'y', 'fresh'];
+
+function initialUi(params: URLSearchParams, saved: Toggles | null): UiState {
+  const toggles = saved ?? { showCuts: true, showRepeat: false, showMotifs: false, showDims: true };
+  const flag = (key: keyof Toggles, param: string) => (params.has(param) ? params.get(param) !== '0' : toggles[key]);
   const mode = params.get('mode');
   const tab = params.get('tab');
   return {
@@ -54,13 +61,42 @@ function initialUi(params: URLSearchParams): UiState {
     tab: tab === 'tiles' || tab === 'align' || tab === 'count' ? tab : 'design',
     selectedBand: null,
     selectedCell: null,
-    toggles: { showCuts: flag('cuts', true), showRepeat: flag('repeat', false), showMotifs: flag('motifs', false), showDims: flag('dims', true) },
+    toggles: { showCuts: flag('showCuts', 'cuts'), showRepeat: flag('showRepeat', 'repeat'), showMotifs: flag('showMotifs', 'motifs'), showDims: flag('showDims', 'dims') },
   };
+}
+
+/** The opening design: a design link, else the autosaved design, else the default. */
+function openingDesign(params: URLSearchParams): DesignDoc {
+  const linked = DESIGN_PARAMS.some((key) => params.has(key));
+  const saved = linked ? null : parseSavedDesign(readStorage(DESIGN_KEY), catalog);
+  return saved ?? applyQuery(createDefaultDocument(catalog), params, catalog);
 }
 
 export function startApp(root: HTMLElement): void {
   const params = new URLSearchParams(location.search);
-  const store = new Store(applyQuery(createDefaultDocument(catalog), params, catalog), initialUi(params));
+  const store = new Store(openingDesign(params), initialUi(params, parseSavedToggles(readStorage(VIEW_KEY))));
+
+  // ---- Autosave: the design shortly after each change (and when the page is hidden), the view toggles at once.
+  let saveTimer: number | undefined;
+  const saveNow = () => {
+    window.clearTimeout(saveTimer);
+    saveTimer = undefined;
+    writeStorage(DESIGN_KEY, JSON.stringify(store.get().doc));
+  };
+  store.subscribe((state, previous) => {
+    if (state.doc !== previous.doc) {
+      window.clearTimeout(saveTimer);
+      saveTimer = window.setTimeout(saveNow, 400);
+    }
+    if (state.ui.toggles !== previous.ui.toggles) writeStorage(VIEW_KEY, JSON.stringify(state.ui.toggles));
+  });
+  const flush = () => {
+    if (saveTimer !== undefined) saveNow();
+  };
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
 
   // The layout is recomputed only when the active plan or the minimum cut changes.
   let layoutInputs: [unknown, number] | null = null;
@@ -83,10 +119,34 @@ export function startApp(root: HTMLElement): void {
     setSize: (patch) => store.commit((d) => act.setSurfaceSize(d, patch)),
     undo: () => store.undo(),
     redo: () => store.redo(),
+    share: () => void shareNow(),
   });
   root.append(topbar.el, stage);
 
-  const textures = new TextureCache(catalog, () => canvas.requestDraw());
+  let sharing = false;
+  async function shareNow(): Promise<void> {
+    if (sharing) return;
+    sharing = true;
+    const state = store.get();
+    const look: Appearance = { groutMm: state.doc.settings.groutMm, groutColor: state.doc.settings.groutColor, ...state.ui.toggles };
+    try {
+      const outcome = await sharePicture(state.doc, layoutFor(state.doc), catalog, textures, look);
+      if (outcome === 'downloaded') toast(stage, 'Picture saved to your downloads.');
+    } catch (error) {
+      console.warn('Sharing failed', error);
+      toast(stage, "Couldn't make the picture. Please try again.");
+    } finally {
+      sharing = false;
+    }
+  }
+
+  const textures = new TextureCache(catalog, () => {
+    // A real tile image has loaded: redraw, and redraw previews made from its placeholder.
+    clearThumbs();
+    canvas.requestDraw();
+    sheetTab = null;
+    scheduleSheet();
+  });
   const canvas = new CanvasView(stage, textures, () => INSETS);
   const modeSwitch = new ModeSwitch((mode) => setMode(mode));
   const designPopover = new Popover(stage, 'Choose a design', 'design-popover');
@@ -156,11 +216,20 @@ export function startApp(root: HTMLElement): void {
 
   // ---- Drawing
   /** Short-lived interaction state: a drag in progress, a tile being carried. */
-  let overlay: Overlay = { dragging: params.get('drag') === '1' };
+  let overlay: Overlay = {};
+  let seriesInUse = '';
   const render = () => {
     const state = store.get();
     const current = layoutFor(state.doc);
-    textures.prepare(catalog.tilesOf(activePlan(state.doc).layout.seriesId).map((t) => t.id));
+    // Keep textures for the wall's and the floor's series only, and paint the shown one up front.
+    const { wall, floor } = state.doc;
+    const key = `${wall.layout.seriesId}|${floor.layout.seriesId}|${state.doc.active}`;
+    if (key !== seriesInUse) {
+      seriesInUse = key;
+      const tilesOf = (seriesId: string) => catalog.tilesOf(seriesId).map((t) => t.id);
+      textures.retain([...tilesOf(wall.layout.seriesId), ...tilesOf(floor.layout.seriesId)]);
+      textures.prepare(tilesOf(activePlan(state.doc).layout.seriesId));
+    }
     const { toggles, mode } = state.ui;
     const look: Appearance = { groutMm: state.doc.settings.groutMm, groutColor: state.doc.settings.groutColor, ...toggles };
     canvas.setScene({

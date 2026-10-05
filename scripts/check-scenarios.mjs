@@ -380,6 +380,68 @@ export const scenarios = [
     },
   },
 
+  // ---- Share: without the Web Share API the picture downloads
+  {
+    name: 'share-download',
+    path: './?debug=1',
+    init: () => {
+      Object.defineProperty(Navigator.prototype, 'share', { value: undefined, configurable: true });
+      Object.defineProperty(Navigator.prototype, 'canShare', { value: undefined, configurable: true });
+    },
+    async run(page, { device, saveDownload }) {
+      const [download] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), press(page, device, 'button[aria-label="Share"]')]);
+      assert(/^kt-wall-demo-ivory-bloom-2400x2700\.png$/.test(download.suggestedFilename()), `file name, got ${download.suggestedFilename()}`);
+      const saved = await saveDownload(download, 'picture');
+      assert(saved.isPng && saved.size > 20000, `a real PNG, got ${saved.size} bytes`);
+      await page.locator('.toast:has-text("downloads")').waitFor({ state: 'visible', timeout: 3000 });
+    },
+  },
+
+  // ---- Share: with the Web Share API (as on Android) the PNG file goes to the share sheet
+  {
+    name: 'share-api',
+    path: './?debug=1',
+    init: () => {
+      Object.defineProperty(Navigator.prototype, 'canShare', { value: (data) => Array.isArray(data?.files) && data.files.length > 0, configurable: true });
+      Object.defineProperty(Navigator.prototype, 'share', {
+        value: async (data) => {
+          const file = data.files[0];
+          window.__shared = { name: file.name, type: file.type, size: file.size, title: data.title, text: data.text };
+        },
+        configurable: true,
+      });
+    },
+    async run(page, { device }) {
+      await press(page, device, 'button[aria-label="Share"]');
+      await page.waitForFunction(() => window.__shared, null, { timeout: 15000 });
+      const shared = await page.evaluate(() => window.__shared);
+      assert(shared.type === 'image/png' && shared.size > 20000, `shares a PNG file, got ${JSON.stringify(shared)}`);
+      assert(shared.title === 'Demo Ivory Bloom · Wall 2400 × 2700 mm', `title, got ${shared.title}`);
+      // Opening wall, centred on the motif: 9 columns, so Light 27 → 29 tiles, Dark/HL-A/HL-B 9 → 10 each.
+      assert(shared.text.includes('59 tiles, 10 boxes'), `text has the totals, got ${shared.text}`);
+    },
+  },
+
+  // ---- Autosave: the design survives a reload; damaged saved data starts fresh
+  {
+    name: 'autosave',
+    path: './?debug=1',
+    async run(page, { device }) {
+      const bandCount = (s) => s.doc.wall.layout.bands.length;
+      await press(page, device, '.sheet-tab:has-text("Design")');
+      await press(page, device, '.preset-choice:has-text("Classic")');
+      await expectState(page, (s) => bandCount(s) === 2, 'Classic applied', (s) => s.doc.wall.layout.bands);
+      await pause(700);
+      await page.reload();
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 15000 });
+      await expectState(page, (s) => bandCount(s) === 2, 'the design is restored after a reload', (s) => s.doc.wall.layout.bands);
+      await page.evaluate(() => localStorage.setItem('kt-tile-designer:design:v1', '{"version":1,"active":"wall","wall":{"broken":true}}'));
+      await page.reload();
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 15000 });
+      await expectState(page, (s) => bandCount(s) === 4, 'damaged saved data starts fresh', (s) => s.doc.wall.layout.bands);
+    },
+  },
+
   // ---- Wall | Floor and the size editor
   {
     name: 'surface-and-size',

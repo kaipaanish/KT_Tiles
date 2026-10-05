@@ -62,6 +62,17 @@ export class TextureCache {
     for (const id of tileIds) if (!this.textures.has(id)) this.build(id);
   }
 
+  /**
+   * Drops every texture except these tiles'. A 300 × 450 mm tile takes about 3 MB with its
+   * mipmaps, so browsing many series would otherwise fill a phone's memory.
+   */
+  retain(tileIds: Iterable<string>): void {
+    const keep = new Set(tileIds);
+    for (const id of [...this.textures.keys()]) if (!keep.has(id)) this.textures.delete(id);
+    const groups = new Set([...keep].map((id) => this.catalog.tile(id).placeholder.group?.id));
+    for (const key of [...this.groups.keys()]) if (!groups.has(key.slice(0, key.lastIndexOf('@')))) this.groups.delete(key);
+  }
+
   private build(tileId: string): Texture {
     const tile = this.catalog.tile(tileId);
     const texture = new Texture(paintPlaceholder(tile, PLACEHOLDER_PX_PER_MM, this.groups), PLACEHOLDER_PX_PER_MM);
@@ -71,12 +82,15 @@ export class TextureCache {
       const url = tile.textureUrl;
       loadImage(url)
         .then((image) => {
+          // The series may have been left (and its textures dropped) while the image loaded.
+          if (!this.textures.has(tileId)) return;
           const canvas = createCanvas(image.naturalWidth, image.naturalHeight);
           context2d(canvas).drawImage(image, 0, 0);
           this.textures.set(tileId, new Texture(canvas, image.naturalWidth / tile.widthMm));
           this.onChange();
         })
-        .catch(() => console.warn(`Couldn't load ${url} for tile "${tileId}"; showing its placeholder instead.`));
+        .catch(() => console.warn(`Couldn't load ${url} for tile "${tileId}"; showing its placeholder instead.`))
+        .finally(() => this.loading.delete(tileId));
     }
     return texture;
   }

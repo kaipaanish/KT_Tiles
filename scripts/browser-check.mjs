@@ -6,7 +6,7 @@
 //   npm run check:browser -- [url] [--out checks/step-2] [--only name] [--browser msedge]
 //
 // Exits with code 1 if any page logs a console error or throws.
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { scenarios } from './check-scenarios.mjs';
@@ -54,10 +54,20 @@ for (const scenario of scenarios) {
       await page.screenshot({ path: file });
       shots.push(file);
     };
+    /** Saves a download next to the screenshots and reports whether it is a PNG. */
+    const saveDownload = async (download, label) => {
+      const file = path.join(outDir, `${scenario.name}-${label}-${device}.png`);
+      await download.saveAs(file);
+      const bytes = await readFile(file);
+      return { file, size: bytes.length, isPng: bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) };
+    };
     try {
+      if (scenario.init) await page.addInitScript(scenario.init);
       await page.goto(new URL(scenario.path ?? '', baseUrl).href);
       await page.waitForSelector('body[data-ready="true"]', { timeout: 15000 });
-      if (scenario.run) await scenario.run(page, { device, shot });
+      // Informational only (headless timing says little about a phone): time to the first drawn frame.
+      if (!scenario.path || scenario.path === './') console.log(`    first frame after ${Math.round(await page.evaluate(() => performance.now()))} ms`);
+      if (scenario.run) await scenario.run(page, { device, shot, saveDownload });
       else await shot('');
     } catch (error) {
       errors.push(`Check failed: ${error.message.split('\n')[0]}`);

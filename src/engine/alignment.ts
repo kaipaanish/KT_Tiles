@@ -24,7 +24,11 @@ interface AxisFrame {
   period: number;
   /** Motif centre within its repeat unit, when the layout has a motif. */
   motif: number | null;
+  /** Length of that repeat unit along this axis: the distance between neighbouring motifs. */
+  unit: number | null;
 }
+
+const MOTIF_MODES: readonly AxisMode[] = ['centre-motif', 'centre-between-motifs'];
 
 export interface ResolvedAlignment {
   /** Bottom-left corner of grid cell (0, 0). */
@@ -60,6 +64,9 @@ function namedOrigin(mode: AxisMode, frame: AxisFrame): number {
       return canonicalOffset(frame.length / 2 - frame.tile / 2, frame.period);
     case 'centre-motif':
       return canonicalOffset(frame.length / 2 - (frame.motif ?? frame.tile / 2), frame.period);
+    case 'centre-between-motifs':
+      // Neighbouring motifs are one unit apart, so the midpoint is half a unit past a motif.
+      return canonicalOffset(frame.length / 2 - (frame.motif ?? 0) - (frame.unit ?? frame.tile) / 2, frame.period);
   }
 }
 
@@ -73,19 +80,24 @@ function resolveAxis(
     warnings.push({ code: 'alignment-fallback', message: 'This layout has no motif, so a tile is centred instead.' });
     return { origin: namedOrigin('centre-tile', frame), mode: 'centre-tile' };
   }
+  if (align.mode === 'centre-between-motifs' && frame.motif === null) {
+    warnings.push({ code: 'alignment-fallback', message: 'This layout has no motif, so the centreline sits on a joint instead.' });
+    return { origin: namedOrigin('centre-joint', frame), mode: 'centre-joint' };
+  }
   return { origin: namedOrigin(align.mode, frame), mode: align.mode };
 }
 
 function floorFrames(width: number, length: number, w: number, h: number, design: Design): { x: AxisFrame; y: AxisFrame } {
+  const motif = design.motifCentre;
   return {
-    x: { length: width, tile: w, period: w * design.cols, motif: design.motifCentre?.x ?? null },
-    y: { length, tile: h, period: h * design.rows, motif: design.motifCentre?.y ?? null },
+    x: { length: width, tile: w, period: w * design.cols, motif: motif?.x ?? null, unit: motif ? w * design.cols : null },
+    y: { length, tile: h, period: h * design.rows, motif: motif?.y ?? null, unit: motif ? h * design.rows : null },
   };
 }
 
 /** Wall bands hang from the bottom row, so the vertical offset only sets the bottom cut. */
 function wallYFrame(tiledHeight: number, h: number): AxisFrame {
-  return { length: tiledHeight, tile: h, period: h, motif: null };
+  return { length: tiledHeight, tile: h, period: h, motif: null, unit: null };
 }
 
 /**
@@ -104,7 +116,13 @@ function wallXFrame(
   const withMotif = plan.bands.filter((band) => band.design.motifCentre !== undefined && band.rowCount > 0);
   const motifBand = withMotif.find((band) => originY + band.rowStart * h < tiledHeight - EPS) ?? withMotif[0];
   return {
-    frame: { length: width, tile: w, period: w * unitCols, motif: motifBand?.design.motifCentre?.x ?? null },
+    frame: {
+      length: width,
+      tile: w,
+      period: w * unitCols,
+      motif: motifBand?.design.motifCentre?.x ?? null,
+      unit: motifBand ? w * motifBand.design.cols : null,
+    },
     motifBandIndex: motifBand?.index ?? null,
   };
 }
@@ -136,7 +154,7 @@ export function resolveAlignment(surface: Surface, layout: Layout, alignment: Al
   }
 
   let yAlign = alignment.y;
-  if (yAlign.mode === 'centre-motif') {
+  if (MOTIF_MODES.includes(yAlign.mode as AxisMode)) {
     warnings.push({ code: 'alignment-fallback', message: "A wall motif can't be centred vertically, so the bottom row starts at the floor." });
     yAlign = { mode: 'bottom' };
   }
@@ -173,8 +191,9 @@ interface AxisSnap<M extends AxisMode> {
   magnet: boolean;
 }
 
-const X_MAGNETS: readonly XMode[] = ['centre-motif', 'centre-tile', 'centre-joint', 'left', 'right'];
-const FLOOR_Y_MAGNETS: readonly YMode[] = ['centre-motif', 'centre-tile', 'centre-joint', 'bottom', 'top'];
+// On a tie the earlier magnet names the result, so motif-aware names come first.
+const X_MAGNETS: readonly XMode[] = ['centre-motif', 'centre-between-motifs', 'centre-tile', 'centre-joint', 'left', 'right'];
+const FLOOR_Y_MAGNETS: readonly YMode[] = ['centre-motif', 'centre-between-motifs', 'centre-tile', 'centre-joint', 'bottom', 'top'];
 const WALL_Y_MAGNETS: readonly YMode[] = ['bottom', 'top'];
 
 /**
@@ -206,7 +225,7 @@ export function snapPatternOffset(surface: Surface, layout: Layout, catalog: Cat
 
 function snapAxis<M extends AxisMode>(raw: number, modes: readonly M[], frame: AxisFrame, magnetMm: number): AxisSnap<M> {
   const targets = modes
-    .filter((mode) => mode !== 'centre-motif' || frame.motif !== null)
+    .filter((mode) => !MOTIF_MODES.includes(mode) || frame.motif !== null)
     .map((mode) => ({ mode, origin: namedOrigin(mode, frame) }));
   let best: { mode: M; value: number; distance: number } | undefined;
   for (const target of targets) {

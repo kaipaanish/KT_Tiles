@@ -24,8 +24,8 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isSize = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= MIN_SIZE_MM && v <= MAX_SIZE_MM;
 
-const X_MODES: readonly string[] = ['left', 'right', 'centre-joint', 'centre-tile', 'centre-motif'];
-const Y_MODES: readonly string[] = ['bottom', 'top', 'centre-joint', 'centre-tile', 'centre-motif'];
+const X_MODES: readonly string[] = ['left', 'right', 'centre-joint', 'centre-tile', 'centre-motif', 'centre-between-motifs'];
+const Y_MODES: readonly string[] = ['bottom', 'top', 'centre-joint', 'centre-tile', 'centre-motif', 'centre-between-motifs'];
 
 function axis<M extends XMode | YMode>(value: unknown, modes: readonly string[]): AxisAlignment<M> | null {
   if (!isObj(value) || typeof value['mode'] !== 'string') return null;
@@ -111,7 +111,9 @@ function settings(value: unknown): Settings | null {
   const num = (key: string, min: number, max: number) => typeof merged[key] === 'number' && (merged[key] as number) >= min && (merged[key] as number) <= max;
   if (!num('minCutFraction', 0.05, 0.5) || !num('allowancePct', 0, 50) || !num('groutMm', 0, 12)) return null;
   if (typeof merged['groutColor'] !== 'string' || !/^#[0-9a-f]{6}$/i.test(merged['groutColor'])) return null;
-  if (merged['suggestPriority'] !== 'avoid-slivers' && merged['suggestPriority'] !== 'centre-motif') return null;
+  // Saves from before the ranking change used 'centre-motif' for what is now 'symmetric'.
+  if (merged['suggestPriority'] === 'centre-motif') merged['suggestPriority'] = 'symmetric';
+  if (merged['suggestPriority'] !== 'avoid-slivers' && merged['suggestPriority'] !== 'symmetric') return null;
   return {
     minCutFraction: merged['minCutFraction'] as number,
     allowancePct: merged['allowancePct'] as number,

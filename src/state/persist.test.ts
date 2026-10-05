@@ -63,3 +63,11 @@ describe('saved designs', () => {
     expect(parseSavedToggles('nope')).toBeNull();
   });
 });
+
+describe('saved settings from before the ranking change', () => {
+  it('read the old "centre the motif" priority as "symmetric"', () => {
+    const doc = JSON.parse(JSON.stringify(createDefaultDocument(catalog)));
+    doc.settings.suggestPriority = 'centre-motif';
+    expect(parseSavedDesign(JSON.stringify(doc), catalog)?.settings.suggestPriority).toBe('symmetric');
+  });
+});

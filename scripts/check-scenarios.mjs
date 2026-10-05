@@ -105,7 +105,7 @@ export const scenarios = [
     path: './?debug=1',
     async run(page, { device, shot }) {
       const start = await state(page);
-      assert(alignX(start).mode === 'centre-motif', 'opens centred on the motif');
+      assert(alignX(start).mode === 'centre-between-motifs', 'opens on the top suggestion: between motifs');
       const scale = await viewScale(page);
       const from = await screenOf(page, 1200, 1100);
       const input = await pointer(page, device);
@@ -114,12 +114,12 @@ export const scenarios = [
       await shot('mid-drag');
       await input.move({ x: from.x + 150 * scale, y: from.y });
       await input.up();
-      await expectState(page, (s) => alignX(s).mode === 'centre-joint' && s.canUndo, '150 mm to the right snaps to centre-joint', alignX);
+      await expectState(page, (s) => alignX(s).mode === 'centre-motif' && s.canUndo, '150 mm to the right snaps to centre-motif', alignX);
       await shot('after');
       await press(page, device, 'button[aria-label="Undo"]');
-      await expectState(page, (s) => alignX(s).mode === 'centre-motif' && !s.canUndo, 'undo restores it, and the whole drag was one step', alignX);
+      await expectState(page, (s) => alignX(s).mode === 'centre-between-motifs' && !s.canUndo, 'undo restores it, and the whole drag was one step', alignX);
       await press(page, device, 'button[aria-label="Redo"]');
-      await expectState(page, (s) => alignX(s).mode === 'centre-joint', 'redo re-applies it', alignX);
+      await expectState(page, (s) => alignX(s).mode === 'centre-motif', 'redo re-applies it', alignX);
     },
   },
 
@@ -272,14 +272,20 @@ export const scenarios = [
       await page.locator('.suggestion').first().waitFor({ state: 'visible', timeout: 3000 });
       const read = () => page.locator('.suggestion').evaluateAll((els) => els.map((el) => [el.querySelector('.suggestion-label')?.firstChild?.textContent, el.querySelector('.suggestion-text')?.textContent]));
       let list = await read();
-      assert(list[0]?.[0] === 'Centre tile' && list[0]?.[1] === 'No slivers; motif 150 mm off-centre', `avoid slivers ranks centre-tile first, got ${JSON.stringify(list[0])}`);
-      assert(list.some(([label, text]) => label === 'Centre motif' && text === 'Motif centred, but 25 mm slivers at both ends'), 'the centred-motif option shows its slivers');
+      assert(
+        list[0]?.[0] === 'Centre tile' && list[0]?.[1] === '3 whole medallions + 2 cut at the edges, 175 mm cuts at both ends, not symmetric',
+        `avoid slivers ranks centre-tile first, got ${JSON.stringify(list[0])}`,
+      );
+      assert(
+        list.some(([label, text]) => label === 'Centre motif' && text === '3 whole medallions + 2 cut at the edges, 25 mm slivers at both ends, symmetric'),
+        'the centred-motif option shows its slivers',
+      );
       await shot('suggestions');
-      await press(page, device, '.priority button:has-text("Centre the motif")');
-      await expectState(page, (s) => s.doc.settings.suggestPriority === 'centre-motif', 'priority switched', (s) => s.doc.settings);
+      await press(page, device, '.priority button:has-text("Symmetric pattern")');
+      await expectState(page, (s) => s.doc.settings.suggestPriority === 'symmetric', 'priority switched', (s) => s.doc.settings);
       await pause(150);
       list = await read();
-      assert(list[0]?.[0] === 'Centre motif', `motif-centred options first, got ${JSON.stringify(list[0])}`);
+      assert(list[0]?.[0] === 'Centre motif' && list[1]?.[0] === 'Between motifs', `symmetric options first, got ${JSON.stringify(list.slice(0, 2))}`);
       await press(page, device, '.suggestion >> nth=0');
       await expectState(page, (s) => s.doc.wall.alignment.x.mode === 'centre-motif', 'tapping a suggestion applies it', (s) => s.doc.wall.alignment);
       await shot('applied');
@@ -417,8 +423,8 @@ export const scenarios = [
       const shared = await page.evaluate(() => window.__shared);
       assert(shared.type === 'image/png' && shared.size > 20000, `shares a PNG file, got ${JSON.stringify(shared)}`);
       assert(shared.title === 'Demo Ivory Bloom · Wall 2400 × 2700 mm', `title, got ${shared.title}`);
-      // Opening wall, centred on the motif: 9 columns, so Light 27 → 29 tiles, Dark/HL-A/HL-B 9 → 10 each.
-      assert(shared.text.includes('59 tiles, 10 boxes'), `text has the totals, got ${shared.text}`);
+      // Opening wall, between motifs: 8 columns and no cuts, so Light 24 → 26 tiles, Dark/HL-A/HL-B 8 → 9 each.
+      assert(shared.text.includes('53 tiles, 10 boxes'), `text has the totals, got ${shared.text}`);
     },
   },
 

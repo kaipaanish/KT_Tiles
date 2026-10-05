@@ -1,6 +1,7 @@
 import {
   presetsFor,
   resolvePreset,
+  suggestAlignments,
   type Alignment,
   type AxisAlignment,
   type Catalog,
@@ -72,32 +73,44 @@ export function firstDesignOf(seriesId: string, catalog: Catalog): string {
   return design.id;
 }
 
-/** Opens on a "Highlighter band" wall in the first wall series, with no setup. */
+/** The best-ranked alignment for a plan (walls keep their vertical alignment). */
+export function topSuggestion<L extends Layout>(plan: SurfacePlan<L>, catalog: Catalog, settings: Settings = DEFAULT_SETTINGS): Alignment {
+  const [top] = suggestAlignments(plan.surface, plan.layout, catalog, {
+    priority: settings.suggestPriority,
+    minCutFraction: settings.minCutFraction,
+    current: plan.alignment,
+  });
+  return top?.alignment ?? plan.alignment;
+}
+
+/** Opens on a "Highlighter band" wall in the first wall series, aligned by the top suggestion, with no setup. */
 export function createDefaultDocument(catalog: Catalog): DesignDoc {
   const wallSeries = catalog.seriesList('wall')[0];
   const floorSeries = catalog.seriesList('floor')[0];
   if (!wallSeries || !floorSeries) throw new Error('The catalog needs at least one wall series and one floor series');
+  const wall: SurfacePlan<WallLayout> = {
+    surface: { widthMm: 2400, heightMm: 2700, tiledHeightMm: 2700 },
+    layout: { surface: 'wall', seriesId: wallSeries.id, bands: wallBandsFor(wallSeries.id, catalog) },
+    alignment: { x: { mode: 'centre-motif' }, y: { mode: 'bottom' } },
+    overrides: {},
+  };
+  const floor: SurfacePlan<FloorLayout> = {
+    surface: { widthMm: 1800, heightMm: 2400 },
+    layout: { surface: 'floor', seriesId: floorSeries.id, designId: firstDesignOf(floorSeries.id, catalog) },
+    alignment: { x: { mode: 'centre-joint' }, y: { mode: 'centre-joint' } },
+    overrides: {},
+  };
   return {
     version: 1,
     active: 'wall',
-    wall: {
-      surface: { widthMm: 2400, heightMm: 2700, tiledHeightMm: 2700 },
-      layout: { surface: 'wall', seriesId: wallSeries.id, bands: wallBandsFor(wallSeries.id, catalog) },
-      alignment: { x: { mode: 'centre-motif' }, y: { mode: 'bottom' } },
-      overrides: {},
-    },
-    floor: {
-      surface: { widthMm: 1800, heightMm: 2400 },
-      layout: { surface: 'floor', seriesId: floorSeries.id, designId: firstDesignOf(floorSeries.id, catalog) },
-      alignment: { x: { mode: 'centre-joint' }, y: { mode: 'centre-joint' } },
-      overrides: {},
-    },
+    wall: { ...wall, alignment: topSuggestion(wall, catalog) },
+    floor: { ...floor, alignment: topSuggestion(floor, catalog) },
     settings: { ...DEFAULT_SETTINGS },
   };
 }
 
-const X_MODES: readonly XMode[] = ['left', 'right', 'centre-joint', 'centre-tile', 'centre-motif'];
-const Y_MODES: readonly YMode[] = ['bottom', 'top', 'centre-joint', 'centre-tile', 'centre-motif'];
+const X_MODES: readonly XMode[] = ['left', 'right', 'centre-joint', 'centre-tile', 'centre-motif', 'centre-between-motifs'];
+const Y_MODES: readonly YMode[] = ['bottom', 'top', 'centre-joint', 'centre-tile', 'centre-motif', 'centre-between-motifs'];
 
 function axisFromParam<M extends XMode | YMode>(value: string | null, modes: readonly M[]): AxisAlignment<M> | null {
   if (value === null || value === '') return null;

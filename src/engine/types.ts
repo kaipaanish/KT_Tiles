@@ -121,8 +121,12 @@ export interface Surface {
   tiledHeightMm?: number;
 }
 
-export type XMode = 'left' | 'right' | 'centre-joint' | 'centre-tile' | 'centre-motif';
-export type YMode = 'bottom' | 'top' | 'centre-joint' | 'centre-tile' | 'centre-motif';
+/**
+ * centre-motif puts a motif centre on the centreline; centre-between-motifs puts the
+ * centreline exactly midway between two neighbouring motif centres. Both are symmetric.
+ */
+export type XMode = 'left' | 'right' | 'centre-joint' | 'centre-tile' | 'centre-motif' | 'centre-between-motifs';
+export type YMode = 'bottom' | 'top' | 'centre-joint' | 'centre-tile' | 'centre-motif' | 'centre-between-motifs';
 export type AxisMode = XMode | YMode;
 
 /** custom: the distance of the pattern origin from the left (or bottom) edge, in mm. */

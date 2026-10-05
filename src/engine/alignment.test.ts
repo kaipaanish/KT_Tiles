@@ -116,3 +116,27 @@ describe('override keys', () => {
     expect(darkX(named.pieces)).toBe(darkX(dragged.pieces));
   });
 });
+
+describe('centre-between-motifs', () => {
+  it('puts the centreline midway between two motif centres', () => {
+    const medallions = presetWall(AZURE, 'highlighter-band');
+    expect(resolveAlignment(wall(2400, 2700), medallions, align('centre-between-motifs'), catalog).origin.x).toBe(0);
+    // On 2450 it is the joint between two medallion units.
+    expect(resolveAlignment(wall(2450, 2700), medallions, align('centre-between-motifs'), catalog).origin.x).toBe(-575);
+    const sprigs = run(wall(2400, 2700), presetWall(IVORY, 'highlighter-band'), align('centre-between-motifs'));
+    expect(sprigs.origin.x).toBe(0);
+    expect(sprigs.motifCentres.filter((p) => p.y === 1800).map((p) => p.x).slice(3, 5)).toEqual([1050, 1350]);
+  });
+
+  it('falls back to a centred joint, with a warning, when there is no motif', () => {
+    const result = run(wall(2450, 2700), plainWall(IVORY, 'ivory-light-plain'), align('centre-between-motifs'));
+    expect(result.alignment.x).toBe('centre-joint');
+    expect(result.warnings.map((w) => w.code)).toEqual(['alignment-fallback', 'sliver', 'sliver']);
+  });
+
+  it('is a drag magnet, and names the grid when several magnets coincide', () => {
+    const layout = presetWall(IVORY, 'highlighter-band');
+    expect(snap(wall(2400, 2700), layout, { x: 8, y: 0 }).alignment.x).toEqual({ mode: 'centre-between-motifs' });
+    expect(snap(wall(2400, 2700), layout, { x: 140, y: 0 }).alignment.x).toEqual({ mode: 'centre-motif' });
+  });
+});

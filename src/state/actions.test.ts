@@ -197,3 +197,14 @@ describe('store', () => {
     expect(store.get().canUndo).toBe(false);
   });
 });
+
+describe('opening design', () => {
+  it('uses the top suggestion: on 2400 mm, the sprigs sit between motifs with no cuts', () => {
+    const doc = fresh();
+    expect(doc.wall.alignment).toEqual({ x: { mode: 'centre-between-motifs' }, y: { mode: 'bottom' } });
+    const plan = doc.wall;
+    const result = layoutSurface(plan.surface, plan.layout, plan.alignment, plan.overrides, catalog);
+    expect(result.pieces.filter((p) => p.isCut)).toHaveLength(0);
+    expect(doc.floor.alignment).toEqual({ x: { mode: 'centre-joint' }, y: { mode: 'centre-joint' } });
+  });
+});

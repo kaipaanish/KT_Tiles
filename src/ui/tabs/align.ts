@@ -26,6 +26,7 @@ const X_OPTIONS: readonly { mode: XMode; label: string }[] = [
   { mode: 'centre-joint', label: 'Centre joint' },
   { mode: 'centre-tile', label: 'Centre tile' },
   { mode: 'centre-motif', label: 'Centre motif' },
+  { mode: 'centre-between-motifs', label: 'Between motifs' },
   { mode: 'right', label: 'Right' },
 ];
 const WALL_Y_OPTIONS: readonly { mode: YMode; label: string }[] = [
@@ -37,6 +38,7 @@ const FLOOR_Y_OPTIONS: readonly { mode: YMode; label: string }[] = [
   { mode: 'centre-joint', label: 'Centre joint' },
   { mode: 'centre-tile', label: 'Centre tile' },
   { mode: 'centre-motif', label: 'Centre motif' },
+  { mode: 'centre-between-motifs', label: 'Between motifs' },
   { mode: 'top', label: 'Top' },
 ];
 
@@ -56,7 +58,7 @@ function options<M extends XMode | YMode>(
     { class: 'option-grid' },
     ...choices.map(({ mode, label }) => {
       const on = current.mode === mode;
-      const noMotif = mode === 'centre-motif' && !hasMotif;
+      const noMotif = (mode === 'centre-motif' || mode === 'centre-between-motifs') && !hasMotif;
       return h(
         'button',
         {
@@ -150,12 +152,12 @@ export function alignTab(ctx: TabContext): HTMLElement {
     section(wall ? 'Across the wall' : 'Across (width)', across),
     section(wall ? 'Up the wall' : 'Along (length)', up),
     section('Smallest acceptable cut', minCut, 'Cuts smaller than this are slivers: hard to cut and they look like a mistake.'),
-    section('Suggest alignment', suggestionsBlock(ctx, hasMotif)),
+    section('Suggest alignment', suggestionsBlock(ctx)),
     section('Cuts now', cutsNow(ctx)),
   );
 }
 
-function suggestionsBlock(ctx: TabContext, hasMotif: boolean): HTMLElement {
+function suggestionsBlock(ctx: TabContext): HTMLElement {
   const { state, result, catalog, store } = ctx;
   const { doc } = state;
   const plan = activePlan(doc);
@@ -166,9 +168,8 @@ function suggestionsBlock(ctx: TabContext, hasMotif: boolean): HTMLElement {
   const block = h(
     'div',
     { class: 'suggest' },
-    h('div', { class: 'priority' }, h('span', { class: 'priority-label' }, 'Priority'), h('div', { class: 'segmented', role: 'group', 'aria-label': 'Priority' }, segment('avoid-slivers', 'Avoid slivers'), segment('centre-motif', 'Centre the motif'))),
+    h('div', { class: 'priority' }, h('span', { class: 'priority-label' }, 'Priority'), h('div', { class: 'segmented', role: 'group', 'aria-label': 'Priority' }, segment('avoid-slivers', 'Avoid slivers'), segment('symmetric', 'Symmetric pattern'))),
   );
-  if (!hasMotif && priority === 'centre-motif') block.append(h('p', { class: 'tab-hint' }, 'This layout has no motif, so slivers decide.'));
 
   if (!showSuggestions) {
     block.append(
@@ -195,8 +196,8 @@ function suggestionsBlock(ctx: TabContext, hasMotif: boolean): HTMLElement {
     const current = isCurrent(s);
     const badges = [
       h('span', { class: `badge ${s.hasSliver ? 'is-bad' : 'is-good'}` }, s.hasSliver ? 'Slivers' : 'No slivers'),
-      s.motifCentred === null ? null : h('span', { class: `badge ${s.motifCentred ? 'is-good' : 'is-bad'}` }, s.motifCentred ? 'Motif centred' : 'Motif off-centre'),
-      s.symmetric ? h('span', { class: 'badge' }, 'Symmetric') : null,
+      h('span', { class: `badge ${s.symmetric ? 'is-good' : 'is-bad'}` }, s.symmetric ? 'Symmetric' : 'Not symmetric'),
+      s.cutMotifs === null ? null : h('span', { class: `badge ${s.cutMotifs === 0 ? 'is-good' : 'is-bad'}` }, s.cutMotifs === 0 ? 'Motifs whole' : `${s.cutMotifs} cut motif${s.cutMotifs === 1 ? '' : 's'}`),
       current ? h('span', { class: 'badge is-current' }, 'Current') : null,
     ];
     list.append(

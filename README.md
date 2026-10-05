@@ -33,7 +33,7 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 | --- | --- |
 | **Design** | Series for the current surface, the wall presets (drawn on your wall), and the band list with the same actions as Row mode plus add/remove. On floors, the floor design. |
 | **Tiles** | The series' tiles grouped by role. Tap one to put it in the selected band (Row mode or the band list), or in the selected tile (Tile mode). |
-| **Align** | Alignment across and up (or along, for floors), a custom offset or bottom-row height, the smallest acceptable cut, and **Suggest alignment**. Suggestions are ranked by the chosen priority (avoid slivers, or centre the motif); tap one to apply it. Also shows the current cut at each edge. |
+| **Align** | Alignment across and up (or along, for floors), a custom offset or bottom-row height, the smallest acceptable cut, and **Suggest alignment**. Suggestions are ranked by the chosen priority (Avoid slivers, or Symmetric pattern) and say how many motifs are whole or cut; tap one to apply it. Also shows the current cut at each edge. |
 | **Count** | Full, cut, pieces, tiles to buy and boxes per tile, with totals, tiled area (m² and sq ft) and the allowance. |
 
 **Share** (top bar) makes a picture of the wall or floor with its dimensions. Under it is a summary: series, size, band heights from the floor, tiles and boxes per tile, totals and area.
@@ -171,18 +171,27 @@ Where the brief was ambiguous, these are the choices made.
    - Custom offsets are used as given.
    - A wall's vertical offset only sets the bottom row's cut, so it wraps within one tile.
 9. **Vertical alignment on walls** can also be "top": a full tile at the tiled height, with the cut at the floor. Centre-motif doesn't apply vertically on walls.
-10. **Centre-motif on a wall** uses the lowest visible band that has a motif. If there is no motif, it falls back to centre-tile and shows a warning.
-11. **Pattern drag snapping** moves the pattern in half-tile steps. Magnets take over when the pattern is close to one: a centred joint, tile or motif, or a flush edge.
+10. **Centre-motif and between-motifs on a wall** use the lowest visible band that has a motif. Centre-motif puts a motif centre on the centreline; between-motifs puts the centreline exactly midway between two neighbouring motifs. With no motif they fall back to centre-tile and centre-joint, with a warning.
+11. **Pattern drag snapping** moves the pattern in half-tile steps. Magnets take over when the pattern is close to one: a centred joint, tile or motif, the centreline between two motifs, or a flush edge. When several magnets give the same grid, the motif-aware name wins.
     - Landing on a magnet sets that named mode, so the layout stays centred if the wall width changes.
     - Exact offsets are typed in the Align tab.
 12. **On walls, vertical drag only sets the bottom cut**, anywhere from a full tile to half a tile, or flush at the top. Bands keep their row counts. To raise the highlighter band, add rows to the band below it.
-13. **Suggestion ranking.** Options are ranked by:
+13. **Suggestion ranking.** With **Avoid slivers**, options are ranked by:
     1. no slivers
-    2. motif centred
-    3. symmetric
-    4. the largest smallest cut
+    2. symmetric
+    3. fewest cut motifs
+    4. fewest cut tiles
+    5. the largest smallest cut
+
+    **Symmetric pattern** puts symmetric first, then the same order.
+    - *Symmetric* means the pattern mirrors about the centreline: a motif centre on it, or it exactly midway between two neighbouring motif centres. For plain designs, the tile grid is symmetric. Floors must be symmetric both ways.
+    - *Cut motifs* are motif repeat units that cross any surface edge, including the tiled height.
+    - Ties keep a fixed order (centre motif, between motifs, centre tile, centre joint, left, right).
+    - Explanations for motif designs read like "4 whole medallions, no cuts, symmetric"; plain designs keep "No slivers; 175 mm cuts at both ends".
     
-    The Align tab's priority switch ("centre the motif") puts motif-centred options first. Walls compare horizontal options only; floors compare both axes. Alignments that produce the same layout are merged, e.g. "Centre joint (same as Left and Right)".
+    Walls compare horizontal options only; floors compare both axes. Alignments that produce the same grid are merged, e.g. "Between motifs (same as Centre joint, Left and Right)".
+    - **The opening design uses the top suggestion**: on the default 2400 mm wall that is between motifs, with 8 whole sprigs and no cuts.
+    - Saved designs from before this change read the old "centre the motif" priority as "Symmetric pattern".
 
 **Editing**
 

@@ -1,0 +1,252 @@
+{
+  "tiles": [
+    {
+      "id": "ivory-light",
+      "seriesId": "demo-ivory-bloom",
+      "name": "Light",
+      "role": "light",
+      "widthMm": 300,
+      "heightMm": 450,
+      "finish": "glossy",
+      "tilesPerBox": 8,
+      "placeholder": { "painter": "marble", "colors": ["#efe7d4", "#cbbb98", "#f8f3e6"], "seed": 11 }
+    },
+    {
+      "id": "ivory-dark",
+      "seriesId": "demo-ivory-bloom",
+      "name": "Dark",
+      "role": "dark",
+      "widthMm": 300,
+      "heightMm": 450,
+      "finish": "glossy",
+      "tilesPerBox": 8,
+      "placeholder": { "painter": "stone", "colors": ["#4a3122", "#2c1c12", "#71503a"], "seed": 12 }
+    },
+    {
+      "id": "ivory-hl-a",
+      "seriesId": "demo-ivory-bloom",
+      "name": "HL-A",
+      "role": "highlighter",
+      "widthMm": 300,
+      "heightMm": 450,
+      "finish": "glossy",
+      "tilesPerBox": 8,
+      "placeholder": {
+        "painter": "sprig",
+        "colors": ["#efe7d4", "#cbbb98", "#5c6b38", "#b4553d", "#c9a24a"],
+        "seed": 13,
+        "group": { "id": "ivory-sprig", "cols": 1, "rows": 2, "col": 0, "row": 1 }
+      }
+    },
+    {
+      "id": "ivory-hl-b",
+      "seriesId": "demo-ivory-bloom",
+      "name": "HL-B",
+      "role": "highlighter",
+      "widthMm": 300,
+      "heightMm": 450,
+      "finish": "glossy",
+      "tilesPerBox": 8,
+      "placeholder": {
+        "painter": "sprig",
+        "colors": ["#efe7d4", "#cbbb98", "#5c6b38", "#b4553d", "#c9a24a"],
+        "seed": 13,
+        "group": { "id": "ivory-sprig", "cols": 1, "rows": 2, "col": 0, "row": 0 }
+      }
+    },
+    {
+      "id": "azure-light",
+      "seriesId": "demo-azure-medallion",
+      "name": "Light",
+      "role": "light",
+      "widthMm": 300,
+      "heightMm": 300,
+      "finish": "glossy",
+      "tilesPerBox": 10,
+      "placeholder": { "painter": "speckle", "colors": ["#f6f7f6", "#9eabb7", "#d6dde3"], "seed": 21 }
+    },
+    {
+      "id": "azure-dark",
+      "seriesId": "demo-azure-medallion",
+      "name": "Dark",
+      "role": "dark",
+      "widthMm": 300,
+      "heightMm": 300,
+      "finish": "glossy",
+      "tilesPerBox": 10,
+      "placeholder": { "painter": "speckle", "colors": ["#1c2a49", "#30436b", "#121c33"], "seed": 22 }
+    },
+    {
+      "id": "azure-hl",
+      "seriesId": "demo-azure-medallion",
+      "name": "HL",
+      "role": "highlighter",
+      "widthMm": 300,
+      "heightMm": 300,
+      "finish": "glossy",
+      "tilesPerBox": 10,
+      "placeholder": {
+        "painter": "medallion",
+        "colors": ["#f6f7f6", "#9eabb7", "#1c2a49", "#3f6aa6", "#c9a24a"],
+        "seed": 23,
+        "group": { "id": "azure-medallion", "cols": 2, "rows": 2, "col": 0, "row": 0 }
+      }
+    },
+    {
+      "id": "floor-grey",
+      "seriesId": "demo-floor",
+      "name": "Grey anti-skid",
+      "role": "floor",
+      "widthMm": 300,
+      "heightMm": 300,
+      "finish": "matt",
+      "tilesPerBox": 11,
+      "placeholder": { "painter": "antiskid", "colors": ["#8b8d8f", "#74777a", "#a5a7a9"], "seed": 31 }
+    },
+    {
+      "id": "floor-beige",
+      "seriesId": "demo-floor",
+      "name": "Beige anti-skid",
+      "role": "floor",
+      "widthMm": 300,
+      "heightMm": 300,
+      "finish": "matt",
+      "tilesPerBox": 11,
+      "placeholder": { "painter": "antiskid", "colors": ["#cdb892", "#b39d78", "#e0cfae"], "seed": 32 }
+    }
+  ],
+  "series": [
+    {
+      "id": "demo-ivory-bloom",
+      "name": "Demo Ivory Bloom",
+      "surface": "wall",
+      "tileIds": ["ivory-light", "ivory-dark", "ivory-hl-a", "ivory-hl-b"]
+    },
+    {
+      "id": "demo-azure-medallion",
+      "name": "Demo Azure Medallion",
+      "surface": "wall",
+      "tileIds": ["azure-light", "azure-dark", "azure-hl"]
+    },
+    {
+      "id": "demo-floor",
+      "name": "Demo Floor",
+      "surface": "floor",
+      "tileIds": ["floor-grey", "floor-beige"]
+    }
+  ],
+  "designs": [
+    {
+      "id": "ivory-light-plain",
+      "name": "Light",
+      "seriesId": "demo-ivory-bloom",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "ivory-light", "rotation": 0 }]
+    },
+    {
+      "id": "ivory-dark-plain",
+      "name": "Dark",
+      "seriesId": "demo-ivory-bloom",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "ivory-dark", "rotation": 0 }]
+    },
+    {
+      "id": "ivory-hl-pair",
+      "name": "Highlighter pair",
+      "seriesId": "demo-ivory-bloom",
+      "cols": 1,
+      "rows": 2,
+      "slots": [
+        { "tileId": "ivory-hl-b", "rotation": 0 },
+        { "tileId": "ivory-hl-a", "rotation": 0 }
+      ],
+      "motifCentre": { "x": 150, "y": 450 }
+    },
+    {
+      "id": "azure-light-plain",
+      "name": "Light",
+      "seriesId": "demo-azure-medallion",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "azure-light", "rotation": 0 }]
+    },
+    {
+      "id": "azure-dark-plain",
+      "name": "Dark",
+      "seriesId": "demo-azure-medallion",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "azure-dark", "rotation": 0 }]
+    },
+    {
+      "id": "azure-medallion-2x2",
+      "name": "Medallion",
+      "seriesId": "demo-azure-medallion",
+      "cols": 2,
+      "rows": 2,
+      "slots": [
+        { "tileId": "azure-hl", "rotation": 0 },
+        { "tileId": "azure-hl", "rotation": 270 },
+        { "tileId": "azure-hl", "rotation": 90 },
+        { "tileId": "azure-hl", "rotation": 180 }
+      ],
+      "motifCentre": { "x": 300, "y": 300 }
+    },
+    {
+      "id": "floor-grey-plain",
+      "name": "Grey",
+      "seriesId": "demo-floor",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "floor-grey", "rotation": 0 }]
+    },
+    {
+      "id": "floor-beige-plain",
+      "name": "Beige",
+      "seriesId": "demo-floor",
+      "cols": 1,
+      "rows": 1,
+      "slots": [{ "tileId": "floor-beige", "rotation": 0 }]
+    },
+    {
+      "id": "floor-checker",
+      "name": "Checkerboard",
+      "seriesId": "demo-floor",
+      "cols": 2,
+      "rows": 2,
+      "slots": [
+        { "tileId": "floor-grey", "rotation": 0 },
+        { "tileId": "floor-beige", "rotation": 0 },
+        { "tileId": "floor-beige", "rotation": 0 },
+        { "tileId": "floor-grey", "rotation": 0 }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "id": "classic",
+      "name": "Classic",
+      "bands": [
+        { "role": "dark", "rows": 2 },
+        { "role": "light", "rows": "fill" }
+      ]
+    },
+    {
+      "id": "highlighter-band",
+      "name": "Highlighter band",
+      "bands": [
+        { "role": "dark", "rows": 1 },
+        { "role": "light", "rows": 2 },
+        { "role": "highlighter", "rows": "unit" },
+        { "role": "light", "rows": "fill" }
+      ]
+    },
+    {
+      "id": "feature-wall",
+      "name": "Feature wall",
+      "bands": [{ "role": "highlighter", "rows": "fill" }]
+    }
+  ]
+}

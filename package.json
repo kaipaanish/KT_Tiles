@@ -1,0 +1,20 @@
+{
+  "name": "kt-tile-designer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "KT Ceramics tile pattern designer prototype (step 1: flat wall and floor).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.engine.json"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}

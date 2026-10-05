@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.vercel/
+# Browser-check screenshots and console logs
+checks/
+*.log
+.DS_Store
+Thumbs.db

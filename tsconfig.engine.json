@@ -1,0 +1,11 @@
+{
+  // Type-checks the layout engine without the DOM library, so any use of
+  // document, window or canvas inside src/engine fails the build.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src/engine"],
+  "exclude": ["src/engine/**/*.test.ts", "src/engine/testkit.ts"]
+}

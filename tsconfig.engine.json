@@ -1,11 +1,11 @@
 {
-  // Type-checks the layout engine without the DOM library, so any use of
-  // document, window or canvas inside src/engine fails the build.
+  // Type-checks the layout engine and the pure photo maths without the DOM library,
+  // so any use of document, window or canvas there fails the build.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022"],
     "types": []
   },
-  "include": ["src/engine"],
+  "include": ["src/engine", "src/photo/homography.ts", "src/photo/maskToQuad.ts", "src/photo/pointer.ts"],
   "exclude": ["src/engine/**/*.test.ts", "src/engine/testkit.ts"]
 }

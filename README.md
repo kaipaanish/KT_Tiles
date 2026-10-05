@@ -10,7 +10,7 @@ This is step 1 of 3:
 
 The layout engine has no DOM or canvas code, so steps 2 and 3 can reuse its output unchanged.
 
-**Status:** the layout engine and its tests are done. The designer UI is being built.
+**Status:** the layout engine, the demo tile textures and the canvas renderer are done. Interaction and the panels are being built.
 
 ## Run and test
 
@@ -24,14 +24,41 @@ npm run typecheck  # app types, plus the engine checked without DOM types
 npm run build      # typecheck, then a production build into dist/
 ```
 
+### Browser check
+
+`npm run check:browser` opens the pages listed in `scripts/check-scenarios.mjs` at phone size (390 × 844, touch, 3× pixels) and desktop size (1440 × 900). It saves screenshots and fails if any page logs a console error or a failed request.
+
+```sh
+npm run build && npx vite preview --port 4173     # leave running
+npm run check:browser -- --out checks/latest       # screenshots land in checks/ (git-ignored)
+```
+
+The check uses `playwright-core`, which downloads no browsers: it drives the Chrome already installed on the machine (`--browser msedge` uses Edge instead). It is a development tool only. `npm run build` never runs it, so it has no effect on Vercel deployments.
+
+### URL parameters
+
+These open the app on a particular design, for demos and checks:
+
+| Parameter | Example | Effect |
+| --- | --- | --- |
+| `series` | `demo-azure-medallion` | Wall or floor series |
+| `preset` | `feature-wall` | Wall preset (`classic`, `highlighter-band`, `feature-wall`) |
+| `design` | `floor-checker` | A single design: the floor's design, or one band filling a wall |
+| `surface` | `floor` | Show the wall or the floor |
+| `w`, `h`, `th` | `2450`, `2700`, `2100` | Width, height and tiled height in mm |
+| `x`, `y` | `centre-motif`, `-100` | Alignment mode, or a custom offset in mm |
+| `zoom`, `cx`, `cy` | `4`, `1225`, `1500` | Open zoomed in on a point (mm) |
+| `cuts`, `repeat`, `motifs`, `dims` | `1` or `0` | View toggles |
+
 ## How the code is organised
 
 ```
 src/engine/    pure layout logic: no DOM or canvas, fully unit tested
 src/designs/   series.json (tiles, series, designs, presets) and texture painters
-src/render/    canvas renderer and texture cache          (coming)
-src/state/     store, undo/redo, localStorage autosave    (coming)
-src/ui/        panels, gestures, selection                (coming)
+src/render/    canvas renderer and texture cache
+src/state/     the design document; store, undo/redo and autosave   (coming)
+src/ui/        canvas view, panels, gestures, selection              (in progress)
+scripts/       browser check (development only)
 ```
 
 Units are millimetres. A surface's origin is its bottom-left corner, with x to the right and y up; the renderer flips y.
@@ -65,7 +92,11 @@ All tile data lives in `src/designs/series.json` and is validated when the app l
    motifCentre: { "x": 300, "y": 300 }   (where the four tiles meet)
    ```
 4. **Presets** need no changes. They are written in terms of roles ("Dark × 2 rows, Light fills the rest"), so every wall series that has light, dark and highlighter designs gets them automatically.
-5. **Images.** Real tile images replace the procedural placeholders. (Details arrive with the renderer in step 2.)
+5. **Images.** Put each tile's image in `public/tiles/` and set the tile's `textureUrl` to `"/tiles/<file>"`, for example `"/tiles/kt-blossom-hl-a.jpg"`.
+   - Use one image per printed tile, drawn the way the tile is laid at 0°. The top of the image is the top of the tile on the wall.
+   - The image's proportions should match `widthMm : heightMm`. About 2 pixels per mm (600 × 900 px for a 300 × 450 tile) is plenty.
+   - A motif printed across several tiles needs no special handling: give each tile its own image, and the design's slots and `motifCentre` describe how they go together.
+   - The `placeholder` stays in the data. It is drawn while the image loads, or if the image fails to load (a warning appears in the console). Painters available: `marble`, `stone`, `speckle`, `antiskid`, `flat`, `sprig`, `medallion`.
 
 Keep the three demo series: the engine tests use them.
 
@@ -122,3 +153,10 @@ Where the brief was ambiguous, these are the choices made.
 18. **Engine functions take the catalog** (tiles and designs) as an extra argument, on top of surface, layout, alignment and overrides.
 19. **Motifs drawn across several tiles** are described on each tile with a placeholder `group`: the group's id, its cols and rows, and this tile's slice counted from the bottom-left. Tiles in a group must share series, painter, colours and group size.
 20. **Counts are conservative.** Each cut piece uses a whole tile, because offcuts aren't reused. Tiles needed is pieces × (1 + allowance), rounded up after removing floating-point noise, so 40 pieces at 5% is 42 tiles, not 43. Boxes are rounded up per tile.
+
+**Drawing**
+
+21. **Placeholder textures are painted at 2 px per mm**, once per tile. Smaller copies (mipmaps) are made by halving, and the renderer draws from the smallest copy that is still sharp at the current zoom. Only the textures of the series on screen are built.
+22. **"Show repeat" outlines only multi-tile designs.** A plain design repeats every tile, and the grout already shows that.
+23. **Cut hatching.** Normal cuts are hatched grey; cuts below the minimum are hatched red. Edge-cut labels show with the dimensions and during a pattern drag.
+24. **Motif centres that fall exactly on an edge are still shown**, e.g. a medallion cut in half by the top of the wall.

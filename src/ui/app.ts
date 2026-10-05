@@ -13,7 +13,7 @@ import { toSurface, type Appearance, type Overlay } from '../render/renderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
 import { activePlan, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
-import { Store, type Mode, type Toggles, type UiState } from '../state/store';
+import { Store, type Mode, type Tab, type Toggles, type UiState } from '../state/store';
 import { BandHandles } from './bandHandles';
 import { CanvasView } from './canvasView';
 import { modeHint, ModeSwitch, toast, ViewControls, WarningStrip } from './controls';
@@ -21,8 +21,21 @@ import { designChoices } from './designPicker';
 import { h } from './dom';
 import { attachGestures, type Drag, type PointerPoint } from './gestures';
 import { Popover } from './popover';
+import { Sheet } from './sheet';
+import { alignTab } from './tabs/align';
+import type { TabContext } from './tabs/context';
+import { countTab } from './tabs/count';
+import { designTab } from './tabs/design';
+import { tilesTab } from './tabs/tiles';
 import { TopBar } from './topbar';
 import { fitView, panView, viewCentredOn, zoomAround, type Insets } from './viewport';
+
+const TAB_VIEWS: Record<Tab, (ctx: TabContext) => HTMLElement> = {
+  design: designTab,
+  tiles: tilesTab,
+  align: alignTab,
+  count: countTab,
+};
 
 /** Space around the surface for the mode switch, dimension lines and warnings. */
 const INSETS: Insets = { top: 64, right: 52, bottom: 84, left: 52 };
@@ -35,9 +48,10 @@ const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a
 function initialUi(params: URLSearchParams): UiState {
   const flag = (key: string, fallback: boolean) => (params.has(key) ? params.get(key) !== '0' : fallback);
   const mode = params.get('mode');
+  const tab = params.get('tab');
   return {
     mode: mode === 'row' || mode === 'tile' ? mode : 'pattern',
-    tab: 'design',
+    tab: tab === 'tiles' || tab === 'align' || tab === 'count' ? tab : 'design',
     selectedBand: null,
     selectedCell: null,
     toggles: { showCuts: flag('cuts', true), showRepeat: flag('repeat', false), showMotifs: flag('motifs', false), showDims: flag('dims', true) },
@@ -100,6 +114,46 @@ export function startApp(root: HTMLElement): void {
   const warnings = new WarningStrip();
   stage.append(bandHandles.el, h('div', { class: 'stage-top' }, modeSwitch.el), viewControls.el, warnings.el);
 
+  // ---- The Design / Tiles / Align / Count panel
+  const sheet = new Sheet(
+    (tab) => store.setUi({ tab }),
+    () => scheduleSheet(),
+  );
+  root.append(sheet.el);
+  let sheetQueued = false;
+  let sheetTab: Tab | null = null;
+  const tabContext = (): TabContext => {
+    const state = store.get();
+    return {
+      state,
+      result: layoutFor(state.doc),
+      catalog,
+      textures,
+      store,
+      pickBandDesign: (index, anchor) => openDesignPicker(index, anchor),
+      toast: (message) => toast(stage, message),
+      refresh: () => {
+        sheetTab = null;
+        scheduleSheet();
+      },
+    };
+  };
+  function scheduleSheet(): void {
+    if (sheetQueued) return;
+    sheetQueued = true;
+    requestAnimationFrame(() => {
+      sheetQueued = false;
+      const { tab } = store.get().ui;
+      sheet.setTab(tab);
+      if (!sheet.isOpen) return;
+      const ctx = tabContext();
+      sheet.render(TAB_VIEWS[tab](ctx), tab === sheetTab);
+      sheetTab = tab;
+    });
+  }
+  window.matchMedia('(min-width: 900px)').addEventListener('change', () => scheduleSheet());
+  if (params.has('tab')) sheet.setOpen(true);
+
   // ---- Drawing
   /** Short-lived interaction state: a drag in progress, a tile being carried. */
   let overlay: Overlay = { dragging: params.get('drag') === '1' };
@@ -115,13 +169,15 @@ export function startApp(root: HTMLElement): void {
       overlay: {
         ...overlay,
         selectedCell: mode === 'tile' ? state.ui.selectedCell : null,
-        selectedBand: mode === 'row' ? state.ui.selectedBand : null,
+        selectedBand: mode !== 'tile' && state.doc.active === 'wall' ? state.ui.selectedBand : null,
       },
     });
     topbar.update(state);
     modeSwitch.update(mode, state.doc.active);
     viewControls.update(toggles, mode === 'tile' && Object.keys(activePlan(state.doc).overrides).length > 0);
     warnings.update(current.warnings, !!overlay.dragging);
+    // The panel follows along, but not on every frame of a drag.
+    if (!overlay.dragging && !overlay.floatingTile) scheduleSheet();
   };
   canvas.onFrame = (view) => {
     const state = store.get();

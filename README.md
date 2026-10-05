@@ -10,7 +10,13 @@ This is step 1 of 3:
 
 The layout engine has no DOM or canvas code, so steps 2 and 3 can reuse its output unchanged.
 
-**Status:** the layout engine, demo tile textures, canvas renderer, gestures, the Pattern / Row / Tile modes and undo/redo are done. The bottom-sheet panels are being built.
+**Status:** these are done:
+- the layout engine and demo tile textures
+- the canvas renderer and gestures
+- the Pattern / Row / Tile modes, with undo/redo
+- the Design / Tiles / Align / Count panels
+
+Floor-mode polish, sharing and autosave are next.
 
 ## Using it
 
@@ -26,6 +32,15 @@ Everywhere:
 - Pinch to zoom, pan with two fingers, and double-tap to fit.
 - On desktop, the mouse wheel zooms and right- or middle-drag pans.
 - Undo and Redo are in the top bar, or use Ctrl+Z and Ctrl+Shift+Z.
+
+The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to fold it down. On screens 900 px and wider it is a side panel.
+
+| Tab | Contents |
+| --- | --- |
+| **Design** | Series for the current surface, the wall presets (drawn on your wall), and the band list with the same actions as Row mode plus add/remove. On floors, the floor design. |
+| **Tiles** | The series' tiles grouped by role. Tap one to put it in the selected band (Row mode or the band list), or in the selected tile (Tile mode). |
+| **Align** | Alignment across and up (or along, for floors), a custom offset or bottom-row height, the smallest acceptable cut, and **Suggest alignment**. Suggestions are ranked by the chosen priority (avoid slivers, or centre the motif); tap one to apply it. Also shows the current cut at each edge. |
+| **Count** | Full, cut, pieces, tiles to buy and boxes per tile, with totals, tiled area (m² and sq ft) and the allowance. |
 
 ## Run and test
 
@@ -65,6 +80,7 @@ These open the app on a particular design, for demos and checks:
 | `zoom`, `cx`, `cy` | `4`, `1225`, `1500` | Open zoomed in on a point (mm) |
 | `cuts`, `repeat`, `motifs`, `dims` | `1` or `0` | View toggles |
 | `mode` | `row` | Start in Pattern, Row or Tile mode |
+| `tab` | `align` | Open the panel on a tab |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 
 ## How the code is organised
@@ -74,7 +90,7 @@ src/engine/    pure layout logic: no DOM or canvas, fully unit tested
 src/designs/   series.json (tiles, series, designs, presets) and texture painters
 src/render/    canvas renderer and texture cache
 src/state/     the design document, pure edit actions, store with undo/redo; autosave (coming)
-src/ui/        canvas view, gestures, modes, top bar, band handles; panels (coming)
+src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs
 scripts/       browser check (development only)
 ```
 
@@ -191,3 +207,14 @@ Where the brief was ambiguous, these are the choices made.
     - A pattern drag that had already moved keeps its result.
 29. **The canvas turns off the browser's own touch gestures** (it cancels `touchstart`). Without this, Chrome treats the long press used to lift a tile as its own gesture, and the next tap anywhere (e.g. on Undo) does nothing. The browser check caught this on the phone.
 30. **Row handles sit to the left of the wall when there's room** (desktop), and over its left edge on phones. Each shows the design name above its height range.
+
+**Panels**
+
+31. **On phones the panel starts folded**, with just the tabs showing, so the wall opens large.
+32. **The Tiles tab shows only the current series**, because every band on a wall uses the same series. Switch series in the Design tab.
+33. **The band list runs from the top of the wall down**, like the wall itself. Its arrows move a band up or down.
+    - **Add band** puts a one-repeat Light band just below the top band.
+    - Removing the "fill" band hands "fill" to the band below it.
+34. **The minimum-cut slider runs from 10% to 50% of a tile.** 33% means exactly a third, the default.
+35. **Suggestions appear when asked for** ("Suggest alignment") and keep updating while the tab is open. The option matching the current layout is marked "Current".
+36. **The Count tab's area is the tiled area** (what the tiles cover), not the area of the tiles bought.

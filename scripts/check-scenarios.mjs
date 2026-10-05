@@ -215,6 +215,107 @@ export const scenarios = [
     },
   },
 
+  // ---- Design tab: presets with previews, series, band list
+  {
+    name: 'design-tab',
+    path: './?debug=1&tab=design',
+    async run(page, { device, shot }) {
+      const bands = (s) => s.doc.wall.layout.bands.map((b) => `${b.designId}:${b.rows}`);
+      await page.locator('.preset-choice').first().waitFor({ state: 'visible', timeout: 3000 });
+      await shot('');
+      await press(page, device, '.preset-choice:has-text("Classic")');
+      await expectState(page, (s) => bands(s).join() === 'ivory-dark-plain:2,ivory-light-plain:fill', 'Classic preset applied', bands);
+      await press(page, device, '.preset-choice:has-text("Highlighter band")');
+      await press(page, device, '.series-choice:has-text("Azure")');
+      await expectState(page, (s) => s.doc.wall.layout.seriesId === 'demo-azure-medallion' && bands(s)[2] === 'azure-medallion-2x2:2', 'series switched, bands kept role for role', bands);
+      // Band list: top band first. Move the medallion band (third row from the top... index 2) up one.
+      await press(page, device, 'button[aria-label="Move Medallion up"]');
+      await expectState(page, (s) => bands(s)[3] === 'azure-medallion-2x2:fill', 'medallion moved to the top and took over "fill"', bands);
+      await press(page, device, 'button[aria-label="Undo"]');
+      await press(page, device, '.band-row >> nth=1 >> button[aria-label^="More rows"]');
+      await expectState(page, (s) => bands(s)[2] === 'azure-medallion-2x2:4', 'band list + adds a repeat unit', bands);
+      await shot('azure');
+    },
+  },
+
+  // ---- Tiles tab: assign to the selected band or the selected tile
+  {
+    name: 'tiles-tab',
+    path: './?debug=1&tab=tiles',
+    async run(page, { device, shot }) {
+      await page.locator('.tile-choice').first().waitFor({ state: 'visible', timeout: 3000 });
+      assert((await page.locator('.tab-tiles .tab-heading').allTextContents()).join() === 'Light,Dark,Highlighter', 'tiles grouped by role');
+      await shot('');
+      await press(page, device, '.sheet-tab:has-text("Design")');
+      await press(page, device, '.band-row >> nth=2 >> .band-info'); // Light, 450–1350 mm
+      await press(page, device, '.sheet-tab:has-text("Tiles")');
+      await press(page, device, '.tile-choice:has-text("Dark")');
+      await expectState(page, (s) => s.doc.wall.layout.bands[1].designId === 'ivory-dark-plain', 'tapping a tile assigns it to the selected band', (s) => s.doc.wall.layout.bands);
+      await press(page, device, '.mode-switch button:has-text("Tile")');
+      const input = await pointer(page, device);
+      await input.tap(await pieceCentre(page, 4, 5));
+      await expectState(page, (s) => s.ui.selectedCell?.row === 5, 'a tile is selected', (s) => s.ui.selectedCell);
+      await press(page, device, '.tile-choice:has-text("HL-A")');
+      await expectState(page, (s) => s.doc.wall.overrides['4,5']?.tileId === 'ivory-hl-a', 'tapping a tile replaces the selected tile');
+      await shot('assigned');
+    },
+  },
+
+  // ---- Align tab: the medallion trade-off on a 2450 mm wall, and the priority toggle
+  {
+    name: 'align-tab',
+    path: './?debug=1&tab=align&series=demo-azure-medallion&w=2450&x=left',
+    async run(page, { device, shot }) {
+      const minCut = await page.locator('.range-value').textContent();
+      assert(minCut === '33% of a tile: 100 mm', `the default minimum cut is a third of a tile, got "${minCut}"`);
+      await press(page, device, 'button:has-text("Suggest alignment")');
+      await page.locator('.suggestion').first().waitFor({ state: 'visible', timeout: 3000 });
+      const read = () => page.locator('.suggestion').evaluateAll((els) => els.map((el) => [el.querySelector('.suggestion-label')?.firstChild?.textContent, el.querySelector('.suggestion-text')?.textContent]));
+      let list = await read();
+      assert(list[0]?.[0] === 'Centre tile' && list[0]?.[1] === 'No slivers; motif 150 mm off-centre', `avoid slivers ranks centre-tile first, got ${JSON.stringify(list[0])}`);
+      assert(list.some(([label, text]) => label === 'Centre motif' && text === 'Motif centred, but 25 mm slivers at both ends'), 'the centred-motif option shows its slivers');
+      await shot('suggestions');
+      await press(page, device, '.priority button:has-text("Centre the motif")');
+      await expectState(page, (s) => s.doc.settings.suggestPriority === 'centre-motif', 'priority switched', (s) => s.doc.settings);
+      await pause(150);
+      list = await read();
+      assert(list[0]?.[0] === 'Centre motif', `motif-centred options first, got ${JSON.stringify(list[0])}`);
+      await press(page, device, '.suggestion >> nth=0');
+      await expectState(page, (s) => s.doc.wall.alignment.x.mode === 'centre-motif', 'tapping a suggestion applies it', (s) => s.doc.wall.alignment);
+      await shot('applied');
+      await press(page, device, '.option:has-text("Right")');
+      await expectState(page, (s) => s.doc.wall.alignment.x.mode === 'right', 'alignment buttons apply', (s) => s.doc.wall.alignment);
+    },
+  },
+
+  // ---- Count tab: the numbers from the required engine tests
+  {
+    name: 'count-tab',
+    path: './?debug=1&tab=count&design=ivory-light-plain&x=left',
+    async run(page, { device, shot }) {
+      const row = () => page.locator('.count-table tbody tr').first().locator('td').allTextContents();
+      await page.locator('.count-table').waitFor({ state: 'visible', timeout: 3000 });
+      let cells = await row();
+      assert(cells.join() === '48,0,48,51,7', `left: 48 full, 51 tiles, 7 boxes; got ${cells}`);
+      await shot('left');
+      await press(page, device, '.sheet-tab:has-text("Align")');
+      await press(page, device, '.option:has-text("Centre tile")');
+      await press(page, device, '.sheet-tab:has-text("Count")');
+      await pause(150);
+      cells = await row();
+      assert(cells.join() === '42,12,54,57,8', `centre-tile: 42 full, 12 cut, 57 tiles, 8 boxes; got ${cells}`);
+      const allowance = page.locator('.tab-count input[type="number"]');
+      await allowance.fill('10');
+      await allowance.press('Enter');
+      await expectState(page, (s) => s.doc.settings.allowancePct === 10, 'allowance edited', (s) => s.doc.settings);
+      await pause(150);
+      cells = await row();
+      assert(cells[3] === '60', `54 pieces + 10% = 60 tiles; got ${cells}`);
+      assert((await page.locator('.summary-value').textContent()).includes('6.48 m²'), 'area shown in m²');
+      await shot('centre-tile');
+    },
+  },
+
   // ---- Wall | Floor and the size editor
   {
     name: 'surface-and-size',

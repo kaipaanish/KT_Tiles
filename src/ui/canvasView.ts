@@ -24,7 +24,10 @@ export class CanvasView {
   private fittedFor = '';
   private queued = false;
   private drawn = false;
+  /** Called once, after the first frame. */
   onDraw: (() => void) | null = null;
+  /** Called after every frame, e.g. to move DOM overlays with the view. */
+  onFrame: ((view: View) => void) | null = null;
 
   constructor(
     private readonly host: HTMLElement,
@@ -109,9 +112,17 @@ export class CanvasView {
       this.fittedFor = `${result.surfaceType}:${result.widthMm}x${result.heightMm}`;
     }
     drawScene(this.ctx, this.frame, result, this.view, this.textures, scene.look, scene.overlay);
+    this.onFrame?.(this.view);
     if (!this.drawn) {
       this.drawn = true;
       this.onDraw?.();
     }
+  }
+
+  /** The scale at which the whole surface fits, for zoom limits. */
+  fittedScale(): number {
+    const result = this.scene?.result;
+    if (!result) return 1;
+    return fitView(result.widthMm, result.heightMm, this.frame.width, this.frame.height, this.insets()).scale;
   }
 }

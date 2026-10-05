@@ -1,4 +1,4 @@
-import { formatMm, type Edge, type LayoutResult, type PlacedPiece, type Rect } from '../engine';
+import { formatMm, type Edge, type LayoutResult, type PlacedPiece, type Rect, type Rotation } from '../engine';
 import type { TextureCache } from './textureCache';
 
 /** Maps surface millimetres (y up) to CSS pixels (y down). */
@@ -41,6 +41,8 @@ export interface Overlay {
   liftedCell?: { col: number; row: number } | null;
   /** Where the lifted tile would drop. */
   dropCell?: { col: number; row: number } | null;
+  /** The tile being carried in Tile mode, drawn under the pointer (CSS px). */
+  floatingTile?: { tileId: string; rotation: Rotation; x: number; y: number } | null;
 }
 
 export interface Frame {
@@ -126,6 +128,32 @@ export function drawScene(
   if (look.showMotifs || overlay.dragging) drawMotifCentres(ctx, result, view);
   if (look.showDims) drawDimensions(ctx, result, view);
   if (look.showDims || overlay.dragging) drawEdgeCutLabels(ctx, result, view, !!overlay.dragging);
+  if (overlay.floatingTile) drawFloatingTile(ctx, frame, result, view, textures, overlay.floatingTile);
+  ctx.restore();
+}
+
+/** The carried tile, lifted above the finger with a shadow. */
+function drawFloatingTile(
+  ctx: CanvasRenderingContext2D,
+  frame: Frame,
+  result: LayoutResult,
+  view: View,
+  textures: TextureCache,
+  tile: NonNullable<Overlay['floatingTile']>,
+): void {
+  const w = result.tile.w * view.scale * 1.08;
+  const h = result.tile.h * view.scale * 1.08;
+  ctx.save();
+  ctx.translate(tile.x, tile.y - h * 0.35);
+  ctx.rotate((tile.rotation * Math.PI) / 180);
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = 16;
+  ctx.shadowOffsetY = 6;
+  ctx.drawImage(textures.get(tile.tileId, view.scale * frame.dpr), -w / 2, -h / 2, w, h);
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = COLOURS.guide;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(-w / 2, -h / 2, w, h);
   ctx.restore();
 }
 

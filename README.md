@@ -10,7 +10,22 @@ This is step 1 of 3:
 
 The layout engine has no DOM or canvas code, so steps 2 and 3 can reuse its output unchanged.
 
-**Status:** the layout engine, the demo tile textures and the canvas renderer are done. Interaction and the panels are being built.
+**Status:** the layout engine, demo tile textures, canvas renderer, gestures, the Pattern / Row / Tile modes and undo/redo are done. The bottom-sheet panels are being built.
+
+## Using it
+
+The floating switch at the top of the canvas chooses what a one-finger drag grabs.
+
+| Mode | What you can do |
+| --- | --- |
+| **Pattern** | Drag to shift the whole layout. It moves in half-tile steps and jumps to the centreline, a centred motif or a flush edge when close. While dragging you see the centreline, motif centres and each edge's cut (red below the minimum). |
+| **Row** (walls) | Each band has a handle showing its height range from the floor. Drag ⠿ to move a band up or down, use − / + for its rows, and tap a band to change its design. "Fills rest" marks the band that fills up to the tiled height. |
+| **Tile** | Tap a tile to select it, then tap again to rotate it (rectangular tiles only turn 180°). Hold a tile and drag it onto another to swap them. **Reset tiles** undoes all tile changes. |
+
+Everywhere:
+- Pinch to zoom, pan with two fingers, and double-tap to fit.
+- On desktop, the mouse wheel zooms and right- or middle-drag pans.
+- Undo and Redo are in the top bar, or use Ctrl+Z and Ctrl+Shift+Z.
 
 ## Run and test
 
@@ -49,6 +64,8 @@ These open the app on a particular design, for demos and checks:
 | `x`, `y` | `centre-motif`, `-100` | Alignment mode, or a custom offset in mm |
 | `zoom`, `cx`, `cy` | `4`, `1225`, `1500` | Open zoomed in on a point (mm) |
 | `cuts`, `repeat`, `motifs`, `dims` | `1` or `0` | View toggles |
+| `mode` | `row` | Start in Pattern, Row or Tile mode |
+| `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 
 ## How the code is organised
 
@@ -56,8 +73,8 @@ These open the app on a particular design, for demos and checks:
 src/engine/    pure layout logic: no DOM or canvas, fully unit tested
 src/designs/   series.json (tiles, series, designs, presets) and texture painters
 src/render/    canvas renderer and texture cache
-src/state/     the design document; store, undo/redo and autosave   (coming)
-src/ui/        canvas view, panels, gestures, selection              (in progress)
+src/state/     the design document, pure edit actions, store with undo/redo; autosave (coming)
+src/ui/        canvas view, gestures, modes, top bar, band handles; panels (coming)
 scripts/       browser check (development only)
 ```
 
@@ -160,3 +177,17 @@ Where the brief was ambiguous, these are the choices made.
 22. **"Show repeat" outlines only multi-tile designs.** A plain design repeats every tile, and the grout already shows that.
 23. **Cut hatching.** Normal cuts are hatched grey; cuts below the minimum are hatched red. Edge-cut labels show with the dimensions and during a pattern drag.
 24. **Motif centres that fall exactly on an edge are still shown**, e.g. a medallion cut in half by the top of the wall.
+
+**Interaction**
+
+25. **"Fill" stays with the top position.**
+    - When bands are reordered, whichever band ends up on top fills the rest of the wall.
+    - A band that stops filling keeps the number of rows it was showing.
+    - Removing the fill band hands "fill" to the new top band.
+26. **Overrides are stored only where a cell differs from its design.** Rotating a tile back, or swapping two tiles back, leaves no override.
+27. **Double-tap fits the view**, except on a tile in Tile mode. There it counts as a second tap and rotates the tile. The Fit button always works.
+28. **Only Pattern mode moves the pattern.** In Row and Tile modes, a one-finger drag on the wall pans the view.
+    - A second finger turns any drag into pinch-and-pan.
+    - A pattern drag that had already moved keeps its result.
+29. **The canvas turns off the browser's own touch gestures** (it cancels `touchstart`). Without this, Chrome treats the long press used to lift a tile as its own gesture, and the next tap anywhere (e.g. on Undo) does nothing. The browser check caught this on the phone.
+30. **Row handles sit to the left of the wall when there's room** (desktop), and over its left edge on phones. Each shows the design name above its height range.

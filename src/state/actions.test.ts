@@ -156,6 +156,7 @@ describe('tiles', () => {
 
 describe('store', () => {
   const ui: UiState = {
+    view: 'designer',
     mode: 'pattern',
     tab: 'design',
     selectedBand: null,

@@ -14,7 +14,8 @@ import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
 import { activePlan, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
 import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, VIEW_KEY, writeStorage } from '../state/persist';
-import { Store, type Mode, type Tab, type Toggles, type UiState } from '../state/store';
+import { PhotoMode } from '../photo/photoMode';
+import { Store, type Mode, type Tab, type Toggles, type UiState, type View } from '../state/store';
 import { BandHandles } from './bandHandles';
 import { CanvasView } from './canvasView';
 import { modeHint, ModeSwitch, toast, ViewControls, WarningStrip } from './controls';
@@ -28,12 +29,14 @@ import { alignTab } from './tabs/align';
 import type { TabContext } from './tabs/context';
 import { countTab } from './tabs/count';
 import { designTab } from './tabs/design';
+import { photoTab } from './tabs/photo';
 import { tilesTab } from './tabs/tiles';
 import { clearThumbs } from './thumbs';
 import { TopBar } from './topbar';
 import { fitView, panView, viewCentredOn, zoomAround, type Insets } from './viewport';
 
 const TAB_VIEWS: Record<Tab, (ctx: TabContext) => HTMLElement> = {
+  photo: photoTab,
   design: designTab,
   tiles: tilesTab,
   align: alignTab,
@@ -56,9 +59,11 @@ function initialUi(params: URLSearchParams, saved: Toggles | null): UiState {
   const flag = (key: keyof Toggles, param: string) => (params.has(param) ? params.get(param) !== '0' : toggles[key]);
   const mode = params.get('mode');
   const tab = params.get('tab');
+  const view: View = params.get('view') === 'photo' ? 'photo' : 'designer';
   return {
+    view,
     mode: mode === 'row' || mode === 'tile' ? mode : 'pattern',
-    tab: tab === 'tiles' || tab === 'align' || tab === 'count' ? tab : 'design',
+    tab: tab === 'tiles' || tab === 'align' || tab === 'count' || (tab === 'photo' && view === 'photo') ? tab : view === 'photo' ? 'photo' : 'design',
     selectedBand: null,
     selectedCell: null,
     toggles: { showCuts: flag('showCuts', 'cuts'), showRepeat: flag('showRepeat', 'repeat'), showMotifs: flag('showMotifs', 'motifs'), showDims: flag('showDims', 'dims') },
@@ -115,6 +120,7 @@ export function startApp(root: HTMLElement): void {
   // ---- Page structure
   const stage = h('main', { class: 'stage' });
   const topbar = new TopBar(root, {
+    setView: (view) => switchView(view),
     setSurface: (surface) => switchSurface(surface),
     setSize: (patch) => store.commit((d) => act.setSurfaceSize(d, patch)),
     undo: () => store.undo(),
@@ -147,7 +153,10 @@ export function startApp(root: HTMLElement): void {
     sheetTab = null;
     scheduleSheet();
   });
-  const canvas = new CanvasView(stage, textures, () => INSETS);
+  // The designer and the photo stage share the stage; the hidden one keeps its size and zoom.
+  const designerLayer = h('div', { class: 'stage-layer' });
+  stage.append(designerLayer);
+  const canvas = new CanvasView(designerLayer, textures, () => INSETS);
   const modeSwitch = new ModeSwitch((mode) => setMode(mode));
   const designPopover = new Popover(stage, 'Choose a design', 'design-popover');
   const bandHandles = new BandHandles(catalog, {
@@ -172,7 +181,14 @@ export function startApp(root: HTMLElement): void {
     },
   });
   const warnings = new WarningStrip();
-  stage.append(bandHandles.el, h('div', { class: 'stage-top' }, modeSwitch.el), viewControls.el, warnings.el);
+  designerLayer.append(bandHandles.el, h('div', { class: 'stage-top' }, modeSwitch.el), viewControls.el, warnings.el);
+  const photoMode = new PhotoMode(stage, {
+    changed: () => {
+      sheetTab = null;
+      render();
+    },
+    toast: (message) => toast(stage, message),
+  });
 
   // ---- The Design / Tiles / Align / Count panel
   const sheet = new Sheet(
@@ -196,6 +212,7 @@ export function startApp(root: HTMLElement): void {
         sheetTab = null;
         scheduleSheet();
       },
+      photo: photoMode,
     };
   };
   function scheduleSheet(): void {
@@ -241,6 +258,10 @@ export function startApp(root: HTMLElement): void {
         selectedBand: mode !== 'tile' && state.doc.active === 'wall' ? state.ui.selectedBand : null,
       },
     });
+    const photoView = state.ui.view === 'photo';
+    designerLayer.classList.toggle('is-hidden', photoView);
+    photoMode.show(photoView);
+    sheet.showPhotoTab(photoView);
     topbar.update(state);
     modeSwitch.update(mode, state.doc.active);
     viewControls.update(toggles, mode === 'tile' && Object.keys(activePlan(state.doc).overrides).length > 0);
@@ -259,6 +280,14 @@ export function startApp(root: HTMLElement): void {
   render();
 
   // ---- Modes and surfaces
+  function switchView(view: View): void {
+    designPopover.close();
+    const { tab } = store.get().ui;
+    const nextTab: Tab = view === 'photo' ? 'photo' : tab === 'photo' ? 'design' : tab;
+    store.setUi({ view, tab: nextTab, selectedBand: null, selectedCell: null });
+    sheetTab = null;
+  }
+
   function setMode(mode: Mode): void {
     designPopover.close();
     if (store.get().doc.active === 'floor' && mode === 'row') return;
@@ -447,6 +476,17 @@ export function startApp(root: HTMLElement): void {
   if (params.get('debug') === '1') {
     window.ktDebug = {
       state: () => store.get(),
+      photo: () => {
+        const photo = photoMode.photo;
+        const view = photoMode.view.view;
+        return photo ? { id: photo.id, name: photo.name, width: photo.width, height: photo.height, view } : null;
+      },
+      /** A photo pixel in page coordinates. */
+      photoScreen: (x: number, y: number) => {
+        const view = photoMode.view.view;
+        const rect = photoMode.view.el.getBoundingClientRect();
+        return view ? { x: rect.left + view.x + x * view.scale, y: rect.top + view.y + y * view.scale } : null;
+      },
       result: () => result,
       view: () => canvas.currentView,
       fittedScale: () => canvas.fittedScale(),
@@ -457,6 +497,11 @@ export function startApp(root: HTMLElement): void {
       },
     };
   }
+
+  // ?view=photo&sample=<file> opens photo mode on a sample photo (demos and browser checks).
+  const sampleName = params.get('sample');
+  const sample = sampleName ? photoMode.samples.find((s) => s.file === sampleName) : undefined;
+  if (sample) void photoMode.useSample(sample);
 
   // ?zoom=4&cx=1200&cy=1800 opens zoomed in on a point (mm), e.g. to inspect a motif joint.
   const zoom = Number(params.get('zoom'));

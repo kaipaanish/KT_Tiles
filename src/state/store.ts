@@ -1,7 +1,9 @@
 import type { DesignDoc } from './document';
 
 export type Mode = 'pattern' | 'row' | 'tile';
-export type Tab = 'design' | 'tiles' | 'align' | 'count';
+export type Tab = 'design' | 'tiles' | 'align' | 'count' | 'photo';
+/** The designer (flat surfaces) or photo mode (a real room). */
+export type View = 'designer' | 'photo';
 
 export interface Toggles {
   showCuts: boolean;
@@ -12,6 +14,7 @@ export interface Toggles {
 
 /** View and selection state: not saved and not undoable. */
 export interface UiState {
+  view: View;
   mode: Mode;
   tab: Tab;
   selectedBand: number | null;

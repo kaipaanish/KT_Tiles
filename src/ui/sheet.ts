@@ -2,6 +2,7 @@ import type { Tab } from '../state/store';
 import { h } from './dom';
 
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'photo', label: 'Photo' },
   { id: 'design', label: 'Design' },
   { id: 'tiles', label: 'Tiles' },
   { id: 'align', label: 'Align' },
@@ -42,6 +43,13 @@ export class Sheet {
   /** On wide screens the sheet is a side panel that is always open. */
   get isSidePanel(): boolean {
     return window.matchMedia('(min-width: 900px)').matches;
+  }
+
+  /** The Photo tab only shows in photo mode. */
+  showPhotoTab(show: boolean): void {
+    const button = this.buttons.get('photo');
+    if (button) button.hidden = !show;
+    this.el.classList.toggle('has-photo-tab', show);
   }
 
   setTab(tab: Tab): void {

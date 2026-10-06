@@ -1,11 +1,12 @@
 import { formatMm, type SurfaceType } from '../engine';
 import { MAX_SIZE_MM, MIN_SIZE_MM } from '../state/actions';
 import { activePlan } from '../state/document';
-import type { AppState } from '../state/store';
+import type { AppState, View } from '../state/store';
 import { h, icon, ICONS } from './dom';
 import { Popover } from './popover';
 
 export interface TopBarActions {
+  setView(view: View): void;
   setSurface(surface: SurfaceType): void;
   setSize(patch: { widthMm?: number; heightMm?: number; tiledHeightMm?: number }): void;
   undo(): void;
@@ -14,9 +15,15 @@ export interface TopBarActions {
   share?: () => void;
 }
 
-/** Wall | Floor, the surface size, Undo, Redo and Share. */
+const DESIGNER_ICON = '<g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></g>';
+const PHOTO_ICON = '<path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/>';
+
+/** Designer | Photo, Wall | Floor, the surface size, Undo, Redo and Share. */
 export class TopBar {
   readonly el: HTMLElement;
+  private readonly designer: HTMLButtonElement;
+  private readonly photo: HTMLButtonElement;
+  private readonly surfaceToggle: HTMLElement;
   private readonly wall: HTMLButtonElement;
   private readonly floor: HTMLButtonElement;
   private readonly size: HTMLButtonElement;
@@ -29,6 +36,8 @@ export class TopBar {
     host: HTMLElement,
     private readonly actions: TopBarActions,
   ) {
+    this.designer = h('button', { type: 'button', class: 'segment', 'aria-label': 'Designer', title: 'Designer: flat wall or floor', onclick: () => actions.setView('designer') }, icon(DESIGNER_ICON), h('span', { class: 'view-label' }, 'Designer'));
+    this.photo = h('button', { type: 'button', class: 'segment', 'aria-label': 'Photo', title: 'Photo: tile a real room', onclick: () => actions.setView('photo') }, icon(PHOTO_ICON), h('span', { class: 'view-label' }, 'Photo'));
     this.wall = h('button', { type: 'button', class: 'segment', onclick: () => actions.setSurface('wall') }, 'Wall');
     this.floor = h('button', { type: 'button', class: 'segment', onclick: () => actions.setSurface('floor') }, 'Floor');
     this.size = h('button', { type: 'button', class: 'size-chip', 'aria-haspopup': 'dialog', onclick: () => this.openSize() });
@@ -39,7 +48,8 @@ export class TopBar {
     this.el = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'segmented surface-toggle', role: 'group', 'aria-label': 'Surface' }, this.wall, this.floor),
+      h('div', { class: 'segmented view-toggle', role: 'group', 'aria-label': 'Mode' }, this.designer, this.photo),
+      (this.surfaceToggle = h('div', { class: 'segmented surface-toggle', role: 'group', 'aria-label': 'Surface' }, this.wall, this.floor)),
       this.size,
       h('div', { class: 'topbar-actions' }, this.undo, this.redo, share),
     );
@@ -49,6 +59,14 @@ export class TopBar {
     this.state = state;
     const { doc } = state;
     const plan = activePlan(doc);
+    const photoView = state.ui.view === 'photo';
+    this.designer.classList.toggle('is-on', !photoView);
+    this.photo.classList.toggle('is-on', photoView);
+    this.designer.setAttribute('aria-pressed', String(!photoView));
+    this.photo.setAttribute('aria-pressed', String(photoView));
+    // Photo surfaces bring their own kind and size (they arrive in a later step).
+    this.surfaceToggle.hidden = photoView;
+    this.size.hidden = photoView;
     this.wall.classList.toggle('is-on', doc.active === 'wall');
     this.floor.classList.toggle('is-on', doc.active === 'floor');
     this.wall.setAttribute('aria-pressed', String(doc.active === 'wall'));

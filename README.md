@@ -2,15 +2,17 @@
 
 A salesperson or customer lays out a bathroom wall or floor with a KT Ceramics tile series, drags the pattern into alignment, and gets tile and box counts.
 
-This is step 1 of 3:
+The project has three steps:
 
-1. **Pattern designer** for a flat wall or floor, seen straight on (this repo).
-2. Photo mode: the same layout drawn onto a photo of the room, in perspective.
+1. **Pattern designer** for a flat wall or floor, seen straight on.
+2. **Photo mode**: the same layout drawn onto a photo of the room, in perspective.
 3. Live AR on Android Chrome (WebXR).
 
-The layout engine has no DOM or canvas code, so steps 2 and 3 can reuse its output unchanged.
+The layout engine has no DOM or canvas code, so photo mode and AR reuse its output unchanged.
 
-**Status:** step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
+**Status:**
+- Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
+- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and zooms and pans it. Still to come: finding the walls and floor, laying tiles on them in perspective, editing on the photo, and sharing.
 
 ## Using it
 
@@ -41,6 +43,17 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 - Where the browser can't share files, the picture downloads instead.
 
 **Autosave**: the design is kept in the browser, and it reopens as you left it.
+
+### Photo mode
+
+**Designer | Photo** at the left of the top bar switches between the flat designer and a photo of the room. Both show the same design.
+
+- **Take photo** opens the phone's rear camera, and **Choose from gallery** picks a photo you already have. You can also try a sample photo.
+- Photos are turned the right way up and scaled down to at most 2048 px on the long side.
+- Pinch or scroll to zoom, drag to pan, and double-tap to fit. You can zoom out past the photo's edge.
+- The **Photo** tab shows the current photo, offers another one, and lists the sample photos with their credits.
+
+Photos stay on the device. They are never uploaded and never saved, so closing the page loses them.
 
 ## Run and test
 
@@ -81,6 +94,8 @@ These open the app on a particular design, for demos and checks:
 | `cuts`, `repeat`, `motifs`, `dims` | `1` or `0` | View toggles |
 | `mode` | `row` | Start in Pattern, Row or Tile mode |
 | `tab` | `align` | Open the panel on a tab |
+| `view` | `photo` | Open in photo mode |
+| `sample` | `old-bathroom-subway-tiles.jpg` | With `view=photo`: open that photo from `public/samples/` |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 | `fresh` | `1` | Start from the default design instead of the autosaved one |
 
@@ -94,6 +109,8 @@ src/designs/   series.json (tiles, series, designs, presets) and texture painter
 src/render/    canvas renderer, texture cache, previews, the shared picture
 src/state/     the design document, pure edit actions, store with undo/redo, autosave
 src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs, share
+src/photo/     photo mode: getting the photo, the photo stage, and the perspective maths
+public/samples/  sample photos and their credits, listed automatically
 scripts/       browser check (development only)
 ```
 
@@ -107,7 +124,7 @@ The other engine functions are:
 - `snapPatternOffset`, which snaps the pattern during a drag
 - validation helpers for the data, bands and rotations
 
-`tsconfig.engine.json` type-checks `src/engine` without the DOM library, so any use of `document`, `window` or canvas there fails `npm run typecheck` and `npm run build`.
+`tsconfig.engine.json` type-checks `src/engine` without the DOM library, so any use of `document`, `window` or canvas there fails `npm run typecheck` and `npm run build`. It checks photo mode's pure maths the same way: `homography.ts`, `maskToQuad.ts` and `pointer.ts` in `src/photo/`.
 
 ## Adding a real KT series
 
@@ -135,6 +152,21 @@ All tile data lives in `src/designs/series.json` and is validated when the app l
    - The `placeholder` stays in the data. It is drawn while the image loads, or if the image fails to load (a warning appears in the console). Painters available: `marble`, `stone`, `speckle`, `antiskid`, `flat`, `sprig`, `medallion`.
 
 Keep the three demo series: the engine tests use them.
+
+## Sample photos
+
+Photo mode offers every photo in `public/samples/` as a sample, and the browser check opens each one. Adding a photo needs no code changes.
+
+1. Put the photo (JPEG, PNG or WebP) in `public/samples/`. The app scales photos down to 2048 px on the long side, so saving them at about that size keeps the site small.
+2. Optionally, give it a title and credit in `public/samples/credits.json`, keyed by file name:
+   ```json
+   "our-bathroom.jpg": { "title": "Our bathroom", "credit": "", "licence": "", "source": "" }
+   ```
+   Without an entry, the title is the file name with dashes turned into spaces.
+
+A running `npm run dev` picks up added or removed photos on the next page reload.
+
+The sample included now is [Old bathroom with subway tiles](https://commons.wikimedia.org/wiki/File:Old_bathroom_with_subway_tiles.JPG) by Alf van Beem, released into the public domain under CC0 1.0. The copy here is scaled down to 2048 × 1536.
 
 ## Deploying to Vercel
 
@@ -258,6 +290,24 @@ Where the brief was ambiguous, these are the choices made.
     - Settings added in later versions take their defaults.
     - If storage is blocked or full, nothing breaks; the design just isn't kept.
 42. **A link with design parameters wins over the autosaved design.** Autosave then keeps working on the linked design. `?fresh=1` starts from the default.
+
+**Photo mode**
+
+43. **Photo mode is a second view of the same design**, switched with Designer | Photo in the top bar. The hidden designer keeps its size and zoom, and the Photo tab appears only in photo mode.
+44. **Photos are kept in memory only.** They are never uploaded and never written to `localStorage`, so closing the page loses them.
+    - Each photo is turned upright with its EXIF orientation as it is decoded. Current browsers do this through `createImageBitmap` with `imageOrientation: 'from-image'`, and older ones through an `<img>`.
+    - It is then scaled to at most 2048 px on the long side, which keeps a phone's memory and the tile drawing manageable.
+45. **Sample photos are listed when the site is built.** A small Vite plugin reads `public/samples/` and `credits.json`, so new photos need no code, and the browser check opens every sample.
+46. **Zooming out goes down to 0.3× the fitted size**, so a corner can be placed beyond the photo's edge when a wall runs out of frame. Zooming in stops at 12×.
+47. **A surface is mapped onto the photo with a homography**, from surface millimetres (y up, as in the engine) to photo pixels.
+    - It is solved from four corners in surface order (bottom-left, bottom-right, top-right, top-left), with Hartley normalisation so the solve stays accurate.
+    - A drag on the photo becomes a move in millimetres through the inverse map, so the pattern follows the finger at any depth.
+48. **A surface's first corners come from its region in the segmentation.**
+    - The fit starts from the region under the tap, minus anything other surfaces already cover, with enclosed holes (a mirror, a basin) filled.
+    - The region's convex hull is reduced to four corners. Each corner then moves to where straight lines fitted along its two sides meet, because pixelated corners are rounded off.
+49. **Two walls in one region aren't forced into one quad.**
+    - The fit is scored as 1 − IoU (intersection over union) of the quad and the filled region, where 0 is a perfect fit. Above 15%, the app places a starter quad around the tap, as tall as the region there, with the hint "Drag the corners to this wall's edges".
+    - Comparing the convex hull's area with the quad's, as first proposed, isn't enough. An L-shaped region (a tall wall beside a lower one) loses only about 14% of its hull to the best quad, so it would pass. Its 1 − IoU is above 15%, and the unit tests include that case.
 
 ## Step 1 checklist
 

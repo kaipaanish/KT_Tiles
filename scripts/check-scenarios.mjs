@@ -30,6 +30,8 @@ async function expectState(page, check, message, show = (s) => s.doc[s.doc.activ
 const screenOf = (page, x, y) => page.evaluate(([px, py]) => window.ktDebug.screen(px, py), [x, y]);
 const viewScale = (page) => page.evaluate(() => window.ktDebug.view().scale);
 const fittedScale = (page) => page.evaluate(() => window.ktDebug.fittedScale());
+/** A photo pixel in page coordinates (photo mode). */
+const photoScreen = (page, x, y) => page.evaluate(([px, py]) => window.ktDebug.photoScreen(px, py), [x, y]);
 /** Centre of a placed piece, in page coordinates. */
 const pieceCentre = (page, col, row) =>
   page.evaluate(
@@ -445,6 +447,103 @@ export const scenarios = [
       await page.reload();
       await page.waitForSelector('body[data-ready="true"]', { timeout: 15000 });
       await expectState(page, (s) => bandCount(s) === 4, 'damaged saved data starts fresh', (s) => s.doc.wall.layout.bands);
+    },
+  },
+
+  // ---- Photo mode: the switch, every sample photo, EXIF orientation from the gallery
+  {
+    name: 'photo-switch',
+    path: './?debug=1',
+    async run(page, { device, shot }) {
+      await press(page, device, '.view-toggle button[aria-label="Photo"]');
+      await expectState(page, (s) => s.ui.view === 'photo' && s.ui.tab === 'photo', 'photo mode open on the Photo tab', (s) => s.ui);
+      await page.locator('.photo-empty').waitFor({ state: 'visible', timeout: 3000 });
+      assert(await page.locator('.photo-empty button:has-text("Take photo")').isVisible(), 'Take photo offered');
+      assert(await page.locator('.photo-empty button:has-text("Choose from gallery")').isVisible(), 'gallery offered');
+      await shot('empty');
+      await press(page, device, '.view-toggle button[aria-label="Designer"]');
+      await expectState(page, (s) => s.ui.view === 'designer' && s.ui.tab !== 'photo', 'back in the designer', (s) => s.ui);
+    },
+  },
+  {
+    name: 'photo-samples',
+    path: './?debug=1&view=photo',
+    async run(page, { device, shot }) {
+      // Every photo in public/samples: the first from the empty state, the rest from the Photo tab.
+      const titles = await page.locator('.photo-empty .sample-button').allTextContents();
+      assert(titles.length > 0, 'at least one sample photo in public/samples');
+      for (const [i, title] of titles.entries()) {
+        if (i === 0) {
+          await press(page, device, `.photo-empty .sample-button:text-is("${title}")`);
+        } else {
+          if (!(await page.locator('.tab-photo').isVisible())) await press(page, device, '.sheet-tab:text-is("Photo")');
+          await press(page, device, `.tab-photo .sample-button:text-is("${title}")`);
+        }
+        await page.waitForFunction((t) => window.ktDebug.photo()?.name === t, title, { timeout: 15000 });
+        const photo = await page.evaluate(() => window.ktDebug.photo());
+        assert(Math.max(photo.width, photo.height) <= 2048, `${title}: at most 2048 px, got ${photo.width}x${photo.height}`);
+        await pause(150);
+        await shot(`sample-${i + 1}`);
+      }
+    },
+  },
+  {
+    name: 'photo-zoom',
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device }) {
+      await page.waitForFunction(() => window.ktDebug.photo()?.view, null, { timeout: 15000 });
+      const view = () => page.evaluate(() => window.ktDebug.photo().view);
+      const fit = await view();
+      const centre = await photoScreen(page, 1024, 768);
+      if (device === 'desktop') {
+        await page.mouse.move(centre.x, centre.y);
+        await page.mouse.wheel(0, -600);
+      } else {
+        const input = await pointer(page, device);
+        await input.pinch(centre, 80, 2.5);
+      }
+      await pause(120);
+      const zoomed = await view();
+      assert(zoomed.scale > fit.scale * 1.5, `zoomed in on the photo (${fit.scale.toFixed(3)} → ${zoomed.scale.toFixed(3)})`);
+      // The point under the fingers stays put while zooming.
+      const moved = await photoScreen(page, 1024, 768);
+      assert(Math.hypot(moved.x - centre.x, moved.y - centre.y) < 20, `zoom keeps the photo point under the pointer (moved ${(moved.x - centre.x).toFixed(0)}, ${(moved.y - centre.y).toFixed(0)} px)`);
+      const input = await pointer(page, device);
+      await input.tap(centre);
+      await pause(60);
+      await input.tap(centre);
+      await pause(150);
+      const back = await view();
+      assert(Math.abs(back.scale - fit.scale) < 1e-6 && Math.abs(back.x - fit.x) < 0.5, `double-tap fits the photo again (${back.scale.toFixed(3)} vs ${fit.scale.toFixed(3)})`);
+    },
+  },
+  {
+    name: 'photo-exif',
+    path: './?debug=1&view=photo',
+    async run(page, { device }) {
+      // A 300 × 150 JPEG tagged "rotate 90° clockwise" (EXIF orientation 6) must open as 150 × 300.
+      const jpegBase64 = await page.evaluate(() => {
+        const c = document.createElement('canvas');
+        c.width = 300;
+        c.height = 150;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#c33';
+        ctx.fillRect(0, 0, 150, 150);
+        ctx.fillStyle = '#33c';
+        ctx.fillRect(150, 0, 150, 150);
+        return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+      });
+      const jpeg = Buffer.from(jpegBase64, 'base64');
+      const exif = Buffer.from([
+        0xff, 0xe1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08,
+        0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      ]);
+      const rotated = Buffer.concat([jpeg.subarray(0, 2), exif, jpeg.subarray(2)]);
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), press(page, device, '.photo-empty button:has-text("Choose from gallery")')]);
+      await chooser.setFiles({ name: 'rotated.jpg', mimeType: 'image/jpeg', buffer: rotated });
+      await page.waitForFunction(() => window.ktDebug.photo()?.name === 'rotated.jpg', null, { timeout: 15000 });
+      const photo = await page.evaluate(() => window.ktDebug.photo());
+      assert(photo.width === 150 && photo.height === 300, `EXIF orientation applied: expected 150x300, got ${photo.width}x${photo.height}`);
     },
   },
 

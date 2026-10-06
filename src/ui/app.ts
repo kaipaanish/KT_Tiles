@@ -2,9 +2,6 @@ import { catalog } from '../designs/catalog';
 import {
   cellKey,
   layoutSurface,
-  rebaseOverrides,
-  resolveAlignment,
-  snapPatternOffset,
   type LayoutResult,
   type PlacedPiece,
   type SurfaceType,
@@ -12,7 +9,7 @@ import {
 import { toSurface, type Appearance, type Overlay } from '../render/renderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
-import { activeKind, activePlan, activeWall, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
+import { activeKind, activePlan, activeWall, applyQuery, createDefaultDocument, type DesignDoc, type PhotoSurfaceId } from '../state/document';
 import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, serializeDesign, VIEW_KEY, writeStorage } from '../state/persist';
 import { PhotoMode } from '../photo/photoMode';
 import { largestRegion } from '../photo/maskToQuad';
@@ -24,7 +21,7 @@ import { CanvasView } from './canvasView';
 import { modeHint, ModeSwitch, toast, ViewControls, WarningStrip } from './controls';
 import { designChoices } from './designPicker';
 import { h } from './dom';
-import { attachGestures, type Drag, type PointerPoint } from './gestures';
+import { attachGestures, MAGNET_PX, type Drag, type PointerPoint } from './gestures';
 import { Popover } from './popover';
 import { sharePicture } from './share';
 import { Sheet } from './sheet';
@@ -49,7 +46,6 @@ const TAB_VIEWS: Record<Tab, (ctx: TabContext) => HTMLElement> = {
 /** Space around the surface for the mode switch, dimension lines and warnings. */
 const INSETS: Insets = { top: 64, right: 52, bottom: 84, left: 52 };
 /** How close (in screen pixels) the pattern must come to a magnet to jump to it. */
-const MAGNET_PX = 14;
 
 type Cell = { col: number; row: number };
 const sameCell = (a: Cell | null | undefined, b: Cell | null | undefined) => !!a && !!b && a.col === b.col && a.row === b.row;
@@ -401,13 +397,7 @@ export function startApp(root: HTMLElement): void {
         if (!v) return;
         const at = toSurface(v, p.x, p.y);
         const raw = { x: startOrigin.x + (at.x - from.x), y: startOrigin.y + (at.y - from.y) };
-        const plan = activePlan(store.get().doc);
-        const snap = snapPatternOffset(plan.surface, plan.layout, catalog, raw, MAGNET_PX / v.scale);
-        // A named alignment's own origin can be whole repeats away from where the drag put it;
-        // re-key the overrides so they stay on the same tiles.
-        const named = resolveAlignment(plan.surface, plan.layout, snap.alignment, catalog).origin;
-        const overrides = rebaseOverrides(startOverrides, snap.origin, named, tile);
-        store.preview((d) => act.setAlignment(d, snap.alignment, overrides));
+        store.preview((d) => act.dragPattern(d, { origin: startOrigin, overrides: startOverrides, tile }, raw, MAGNET_PX / v.scale, catalog));
       },
       end() {
         store.endGesture();
@@ -535,8 +525,12 @@ export function startApp(root: HTMLElement): void {
           series: s.plan.layout.seriesId,
           size: { w: s.plan.surface.widthMm, h: s.plan.surface.heightMm },
           active: store.get().doc.active === s.id,
+          alignment: s.plan.alignment,
+          strokes: s.strokes.length,
           ...s.fit,
         })),
+      /** A point on a photo surface (mm) in photo pixels. */
+      surfacePoint: (id: string, x: number, y: number) => photoMode.surfacePoint(id as PhotoSurfaceId, { x, y }),
       /** A photo pixel well inside the biggest region with a label (1 wall, 2 floor), for checks to tap. */
       labelPoint: (label: number) => {
         const segmentation = photoMode.segmentation;

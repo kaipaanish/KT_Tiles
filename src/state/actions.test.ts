@@ -6,10 +6,13 @@ import {
   addPhotoSurface,
   applyPreset,
   assignTile,
+  clearStrokes,
+  dragPattern,
   fitToRectangle,
   keepPhotoSurfaces,
   moveBand,
   movePhotoCorner,
+  paintStroke,
   removeBand,
   removePhotoSurface,
   resetTiles,
@@ -288,5 +291,69 @@ describe('photo surfaces', () => {
     expect(doc.photo.map((s) => s.id)).toEqual(['photo-2']);
     expect(doc.active).toBe('photo-2');
     expect(keepPhotoSurfaces(doc, null).active).toBe('wall');
+  });
+});
+
+describe('pattern drag', () => {
+  const resultOf = (doc: DesignDoc) => {
+    const plan = activePlan(doc);
+    return layoutSurface(plan.surface, plan.layout, plan.alignment, plan.overrides, catalog);
+  };
+  const drag = (doc: DesignDoc, dx: number, magnetMm = 30) => {
+    const result = resultOf(doc);
+    const start = { origin: result.origin, overrides: activePlan(doc).overrides, tile: result.tile };
+    return dragPattern(doc, start, { x: result.origin.x + dx, y: result.origin.y }, magnetMm, catalog);
+  };
+
+  it('snaps as in the designer: 150 mm from between motifs lands on a centred motif', () => {
+    expect(activePlan(drag(fresh(), 150)).alignment.x).toEqual({ mode: 'centre-motif' });
+  });
+
+  it('moves only the surface being edited, on the photo too', () => {
+    const quad: Quad = [
+      { x: 0, y: 10 },
+      { x: 10, y: 10 },
+      { x: 10, y: 0 },
+      { x: 0, y: 0 },
+    ];
+    const doc = addPhotoSurface(fresh(), { photoId: 'p', kind: 'wall', seed: { x: 5, y: 5 }, quad, starter: false });
+    const moved = drag(doc, 150);
+    expect(moved.photo[0]!.plan.alignment.x).toEqual({ mode: 'centre-motif' });
+    expect(moved.wall.alignment).toEqual(doc.wall.alignment);
+  });
+});
+
+describe('brush strokes', () => {
+  const quad: Quad = [
+    { x: 0, y: 10 },
+    { x: 10, y: 10 },
+    { x: 10, y: 0 },
+    { x: 0, y: 0 },
+  ];
+  const withWall = () => addPhotoSurface(fresh(), { photoId: 'p', kind: 'wall', seed: { x: 5, y: 5 }, quad, starter: false });
+  const ui: UiState = { view: 'photo', mode: 'pattern', tab: 'photo', selectedBand: null, selectedCell: null, toggles: { showCuts: true, showRepeat: false, showMotifs: false, showDims: true } };
+
+  it('grow the stroke being drawn and start a new one with a new id', () => {
+    let doc = paintStroke(withWall(), 'photo-1', { id: 1, mode: 'remove', radius: 10, points: [{ x: 1, y: 1 }] });
+    doc = paintStroke(doc, 'photo-1', { id: 1, mode: 'remove', radius: 10, points: [{ x: 1, y: 1 }, { x: 5, y: 1 }] });
+    expect(doc.photo[0]!.strokes).toHaveLength(1);
+    expect(doc.photo[0]!.strokes[0]!.points).toHaveLength(2);
+    doc = paintStroke(doc, 'photo-1', { id: 2, mode: 'add', radius: 4, points: [{ x: 3, y: 3 }] });
+    expect(doc.photo[0]!.strokes.map((s) => s.mode)).toEqual(['remove', 'add']);
+    expect(clearStrokes(doc, 'photo-1').photo[0]!.strokes).toEqual([]);
+  });
+
+  it('make one undo step per stroke', () => {
+    const store = new Store(withWall(), ui);
+    const points = [];
+    for (const x of [1, 2, 3, 4]) {
+      points.push({ x, y: 1 });
+      const stroke = { id: 7, mode: 'add' as const, radius: 5, points: [...points] };
+      store.preview((doc) => paintStroke(doc, 'photo-1', stroke));
+    }
+    store.endGesture();
+    expect(store.get().doc.photo[0]!.strokes[0]!.points).toHaveLength(4);
+    store.undo();
+    expect(store.get().doc.photo[0]!.strokes).toEqual([]);
   });
 });

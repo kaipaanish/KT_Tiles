@@ -396,3 +396,60 @@
   font-size: 13px;
   box-shadow: none;
 }
+
+/* ---- Editing a tiled surface: Pattern | Add | Remove ------------------------------------- */
+
+.photo-tools {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 20px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 12px;
+  padding: 8px 10px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow);
+}
+
+.tool-switch .segment {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.brush-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.brush-size[hidden] {
+  display: none;
+}
+
+.brush-size input {
+  width: 110px;
+  accent-color: var(--accent);
+}
+
+.tools-hint {
+  flex-basis: 100%;
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.look-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

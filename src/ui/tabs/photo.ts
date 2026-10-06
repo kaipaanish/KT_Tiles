@@ -143,6 +143,20 @@ function lightingSection(mode: PhotoMode): HTMLElement {
     value.textContent = percentOf(mode.light);
   });
   const content = h('div', { class: 'range-row' }, h('label', { class: 'field' }, h('span', {}, 'Room lighting'), value), slider);
+  const options = h(
+    'div',
+    { class: 'look-options' },
+    h(
+      'button',
+      { type: 'button', class: `option${mode.showGuides ? ' is-on' : ''}`, 'aria-pressed': String(mode.showGuides), onclick: () => mode.setShowGuides(!mode.showGuides) },
+      'Show grid and centreline',
+    ),
+  );
+  const surface = mode.activeSurface();
+  if (surface && surface.strokes.length > 0) {
+    options.append(h('button', { type: 'button', class: 'option', onclick: () => mode.clearBrush(surface.id) }, 'Clear brush changes'));
+  }
+  content.append(options);
   if (!mode.compositor) content.append(h('p', { class: 'tab-hint' }, "This browser can't draw tiles on the photo (WebGL 2 is off), so a grid shows where they go."));
   return section('Look', content, "How much of the photo's own light and shadow shows on the new tiles.");
 }

@@ -342,7 +342,8 @@ function drawMotifCentres(ctx: CanvasRenderingContext2D, result: LayoutResult, v
   }
 }
 
-function pill(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, colour: string, strong: boolean): void {
+/** A rounded label, as the edge cuts and dimensions use. */
+export function pill(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, colour: string, strong: boolean): void {
   ctx.font = `${strong ? 700 : 600} 12px ${FONT}`;
   const w = ctx.measureText(text).width + 12;
   const h = 20;

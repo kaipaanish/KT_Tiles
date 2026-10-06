@@ -28,6 +28,9 @@ export interface GestureTarget {
   pan(dx: number, dy: number): void;
 }
 
+/** A pattern drag snaps to a magnet within this many screen pixels, in the designer and on the photo. */
+export const MAGNET_PX = 14;
+
 const LONG_PRESS_MS = 450;
 const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_PX = 30;
@@ -152,7 +155,9 @@ export function attachGestures(el: HTMLElement, target: GestureTarget): () => vo
     }
     endPress('cancel');
     if (current.moved || current.panOnly) return;
-    const now = performance.now();
+    // When the taps happened, not when they are handled: a slow first tap (adding a photo surface,
+    // say) delays the second one's handling past the double-tap window.
+    const now = e.timeStamp;
     if (lastTap && now - lastTap.time < DOUBLE_TAP_MS && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < DOUBLE_TAP_PX) {
       lastTap = null;
       target.doubleTap(p);

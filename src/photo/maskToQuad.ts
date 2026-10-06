@@ -49,15 +49,27 @@ function flood(mask: Mask, start: number): Mask {
   let tail = 0;
   queue[tail++] = start;
   out.data[start] = 1;
+  const seen = out.data;
+  const last = width * (height - 1);
   while (head < tail) {
     const i = queue[head++]!;
     const x = i % width;
-    const neighbours = [x > 0 ? i - 1 : -1, x < width - 1 ? i + 1 : -1, i >= width ? i - width : -1, i < width * (height - 1) ? i + width : -1];
-    for (const n of neighbours) {
-      if (n >= 0 && data[n] && !out.data[n]) {
-        out.data[n] = 1;
-        queue[tail++] = n;
-      }
+    // The four neighbours, inline: an array per pixel would cost a phone dearly.
+    if (x > 0 && data[i - 1] && !seen[i - 1]) {
+      seen[i - 1] = 1;
+      queue[tail++] = i - 1;
+    }
+    if (x < width - 1 && data[i + 1] && !seen[i + 1]) {
+      seen[i + 1] = 1;
+      queue[tail++] = i + 1;
+    }
+    if (i >= width && data[i - width] && !seen[i - width]) {
+      seen[i - width] = 1;
+      queue[tail++] = i - width;
+    }
+    if (i < last && data[i + width] && !seen[i + width]) {
+      seen[i + width] = 1;
+      queue[tail++] = i + width;
     }
   }
   return out;

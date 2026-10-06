@@ -39,6 +39,37 @@ async function tapLabel(page, device, label) {
   const input = await pointer(page, device);
   await input.tap(await photoScreen(page, point.x, point.y));
 }
+/** Photo points inside a quad, well clear of label edges: on the wall (label 1) and on fixtures (label 0). */
+const pointsInQuad = (page, quad) =>
+  page.evaluate((q) => {
+    const inside = (p) => {
+      let right = 0;
+      for (let i = 0; i < 4; i++) {
+        let a = q[i];
+        let b = q[(i + 1) % 4];
+        if (a.y > p.y === b.y > p.y) continue;
+        if (a.y > b.y) [a, b] = [b, a];
+        if (a.x + ((p.y - a.y) / (b.y - a.y)) * (b.x - a.x) > p.x) right++;
+      }
+      return right % 2 === 1;
+    };
+    const { width, height } = window.ktDebug.photo();
+    const xs = q.map((p) => p.x);
+    const ys = q.map((p) => p.y);
+    const found = { wall: [], other: [] };
+    for (let y = Math.max(0, Math.min(...ys)); y < Math.min(height, Math.max(...ys)); y += 24) {
+      for (let x = Math.max(0, Math.min(...xs)); x < Math.min(width, Math.max(...xs)); x += 24) {
+        const near = [[0, 0], [-16, 0], [16, 0], [0, -16], [0, 16]].map(([dx, dy]) => ({ x: x + dx, y: y + dy }));
+        if (!near.every(inside)) continue;
+        const labels = near.map((p) => window.ktDebug.labelAt(p.x, p.y));
+        if (labels.every((l) => l === 1)) found.wall.push({ x, y });
+        if (labels.every((l) => l === 0)) found.other.push({ x, y });
+      }
+    }
+    return found;
+  }, quad);
+const alphaAt = async (page, p) => (await page.evaluate(([x, y]) => window.ktDebug.tilePixel(x, y), [p.x, p.y]))[3];
+
 /** Opens a sheet tab (on the phone this also unfolds the sheet). One press is enough: a second would fold it. */
 async function openTab(page, device, name) {
   const body = page.locator(`.tab-${name.toLowerCase()}`);
@@ -519,9 +550,13 @@ export const scenarios = [
     path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
     async run(page, { device }) {
       await page.waitForFunction(() => window.ktDebug.photo()?.view, null, { timeout: 15000 });
+      // Let the wall finder finish first: its result arriving mid-gesture delays the synthetic
+      // second tap past the double-tap window (real touches carry their own timestamps).
+      await segmented(page, 'Old bathroom with subway tiles');
       const view = () => page.evaluate(() => window.ktDebug.photo().view);
       const fit = await view();
-      const centre = await photoScreen(page, 1024, 768);
+      // On the bathtub: a tap there adds no surface, so the double-tap only fits the photo.
+      const centre = await photoScreen(page, 700, 1250);
       if (device === 'desktop') {
         await page.mouse.move(centre.x, centre.y);
         await page.mouse.wheel(0, -600);
@@ -533,7 +568,7 @@ export const scenarios = [
       const zoomed = await view();
       assert(zoomed.scale > fit.scale * 1.5, `zoomed in on the photo (${fit.scale.toFixed(3)} → ${zoomed.scale.toFixed(3)})`);
       // The point under the fingers stays put while zooming.
-      const moved = await photoScreen(page, 1024, 768);
+      const moved = await photoScreen(page, 700, 1250);
       assert(Math.hypot(moved.x - centre.x, moved.y - centre.y) < 20, `zoom keeps the photo point under the pointer (moved ${(moved.x - centre.x).toFixed(0)}, ${(moved.y - centre.y).toFixed(0)} px)`);
       const input = await pointer(page, device);
       await input.tap(centre);
@@ -748,32 +783,7 @@ export const scenarios = [
       assert(await page.evaluate(() => window.ktDebug.webgl()), 'WebGL2 draws the tiles');
       const [wall] = await surfacesOf(page);
       // Points inside the wall's corners: on its region (label 1) and on fixtures (label 0), well away from edges.
-      const points = await page.evaluate((quad) => {
-        const inside = (p) => {
-          let right = 0;
-          for (let i = 0; i < 4; i++) {
-            let a = quad[i];
-            let b = quad[(i + 1) % 4];
-            if (a.y > p.y === b.y > p.y) continue;
-            if (a.y > b.y) [a, b] = [b, a];
-            if (a.x + ((p.y - a.y) / (b.y - a.y)) * (b.x - a.x) > p.x) right++;
-          }
-          return right % 2 === 1;
-        };
-        const xs = quad.map((p) => p.x);
-        const ys = quad.map((p) => p.y);
-        const found = { wall: [], other: [] };
-        for (let y = Math.max(0, Math.min(...ys)); y < Math.min(1536, Math.max(...ys)); y += 24) {
-          for (let x = Math.max(0, Math.min(...xs)); x < Math.min(2048, Math.max(...xs)); x += 24) {
-            const near = [[0, 0], [-16, 0], [16, 0], [0, -16], [0, 16]].map(([dx, dy]) => ({ x: x + dx, y: y + dy }));
-            if (!near.every(inside)) continue;
-            const labels = near.map((p) => window.ktDebug.labelAt(p.x, p.y));
-            if (labels.every((l) => l === 1)) found.wall.push({ x, y });
-            if (labels.every((l) => l === 0)) found.other.push({ x, y });
-          }
-        }
-        return found;
-      }, wall.quad);
+      const points = await pointsInQuad(page, wall.quad);
       assert(points.wall.length > 20 && points.other.length > 0, `wall and fixture points inside the corners (${points.wall.length}, ${points.other.length})`);
       const pixels = (list) => page.evaluate((ps) => ps.map((p) => window.ktDebug.tilePixel(p.x, p.y)), list);
       const onWall = await pixels(points.wall);
@@ -822,6 +832,85 @@ export const scenarios = [
         await pause(150);
         await shot('rim-close-up');
       }
+    },
+  },
+  {
+    // Editing on the photo: the pattern drags with the designer's snapping; the brush fixes the mask.
+    name: 'photo-edit',
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      assert(await page.locator('.photo-tools').isVisible(), 'the tools show for a tiled surface');
+      let [wall] = await surfacesOf(page);
+      assert(wall.alignment.x.mode === 'centre-between-motifs', "the wall starts with the designer's alignment");
+
+      // 150 mm to the right along the wall, as in the designer's own check: it snaps to a centred motif.
+      const { w, h } = wall.size;
+      const mm = (x, y) => page.evaluate(([px, py]) => window.ktDebug.surfacePoint('photo-1', px, py), [x, y]);
+      const fromPhoto = await mm(w / 2, h / 2);
+      const toPhoto = await mm(w / 2 + 150, h / 2);
+      // At fit size on a phone 150 mm is under the 8 px touch slop: zoom in, as a user would for a fine move.
+      await page.evaluate(([x, y]) => window.ktDebug.photoZoom(x, y, 2.5), [fromPhoto.x, fromPhoto.y]);
+      await pause(100);
+      const from = await photoScreen(page, fromPhoto.x, fromPhoto.y);
+      const to = await photoScreen(page, toPhoto.x, toPhoto.y);
+      const input = await pointer(page, device);
+      await input.down(from);
+      await input.move({ x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 }, 4);
+      await pause(100);
+      await shot('mid-drag');
+      await input.move(to, 4);
+      await input.up();
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.alignment.x.mode === 'centre-motif', null, { timeout: 2000 });
+      assert((await state(page)).doc.wall.alignment.x.mode === 'centre-between-motifs', "the designer's wall stays put");
+      await press(page, device, 'button[aria-label="Undo"]');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.alignment.x.mode === 'centre-between-motifs', null, { timeout: 2000 });
+
+      // Back to the whole photo for the brush.
+      await page.evaluate(() => {
+        const { width, height } = window.ktDebug.photo();
+        window.ktDebug.photoZoom(width / 2, height / 2, 1);
+      });
+      await pause(100);
+
+      // Remove: painting over the wall hides the tiles there; undo brings them back.
+      [wall] = await surfacesOf(page);
+      const points = await pointsInQuad(page, wall.quad);
+      const target = points.wall[Math.floor(points.wall.length / 2)];
+      assert(target && (await alphaAt(page, target)) > 200, 'tiles on the wall before brushing');
+      await press(page, device, '.photo-tools button:has-text("Remove")');
+      const at = await photoScreen(page, target.x, target.y);
+      await input.down({ x: at.x - 12, y: at.y });
+      await input.move({ x: at.x + 12, y: at.y }, 4);
+      await input.up();
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.strokes === 1, null, { timeout: 2000 });
+      assert((await alphaAt(page, target)) < 30, 'brushed away');
+      await pause(100);
+      await shot('removed');
+      await press(page, device, 'button[aria-label="Undo"]');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.strokes === 0, null, { timeout: 2000 });
+      assert((await alphaAt(page, target)) > 200, 'undo brings the tiles back');
+
+      // Add: a tap with the Add brush on a fixture inside the wall tiles it.
+      const fixture = points.other[0];
+      assert(fixture && (await alphaAt(page, fixture)) < 30, 'a fixture inside the wall, in front of the tiles');
+      await press(page, device, '.photo-tools button:has-text("Add")');
+      const spot = await photoScreen(page, fixture.x, fixture.y);
+      await (await pointer(page, device)).tap(spot);
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.strokes === 1, null, { timeout: 2000 });
+      assert((await alphaAt(page, fixture)) > 200, 'tiles added over the fixture');
+      await press(page, device, '.photo-tools button:has-text("Pattern")');
+
+      // The perspective grid and centreline, on request.
+      await openTab(page, device, 'Photo');
+      await press(page, device, '.tab-photo button:has-text("Show grid and centreline")');
+      assert(await page.locator('.tab-photo button:has-text("Clear brush changes")').isVisible(), 'brush changes can be cleared');
+      await pause(150);
+      await shot('grid');
     },
   },
   {

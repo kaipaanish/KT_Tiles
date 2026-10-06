@@ -6,6 +6,7 @@ import {
   guidedLabels,
   removeIslands,
   resizeArea,
+  resizePlane,
   upsampleBilinear,
   type GuidedOptions,
 } from './postprocess';
@@ -154,5 +155,16 @@ describe('featherMask', () => {
     expect(row[20]).toBeLessThan(128);
     for (let x = 1; x < width; x++) expect(row[x]).toBeLessThanOrEqual(row[x - 1]!);
     expect(row.filter((v) => v > 0 && v < 255).length).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('resizePlane', () => {
+  it('averages a single channel the same way resizeArea averages colours', () => {
+    const plane = Float32Array.from({ length: 8 * 6 }, (_, i) => (i * 37) % 11);
+    const rgba = new Uint8ClampedArray(8 * 6 * 4);
+    plane.forEach((v, i) => (rgba[i * 4] = v));
+    const small = resizePlane(plane, 8, 6, 3, 2);
+    const reference = resizeArea({ width: 8, height: 6, data: rgba }, 3, 2);
+    small.forEach((v, i) => expect(Math.abs(v - reference.data[i * 4]!)).toBeLessThanOrEqual(0.5));
   });
 });

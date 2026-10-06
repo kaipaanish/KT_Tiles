@@ -1,9 +1,10 @@
 import samples from 'virtual:samples';
-import { layoutSurface, type Catalog, type LayoutResult } from '../engine';
+import { formatMm, layoutSurface, type Catalog, type LayoutResult } from '../engine';
+import { COLOURS, pill } from '../render/renderer';
 import { TileCompositor, type Plane, type SurfaceScene } from '../render/webgl/compositor';
 import type { TextureCache } from '../render/textureCache';
 import { FakeSegmenter } from '../segment/fakeSegmenter';
-import { featherMask, labelMask, resizeArea } from '../segment/postprocess';
+import { featherMask, labelMask, resizePlane } from '../segment/postprocess';
 import type { Backend } from '../segment/segformer';
 import { CEILING, FLOOR, WALL, type RGBAImage, type Segmentation, type Segmenter } from '../segment/segmenter';
 import { WorkerSegmenter } from '../segment/workerSegmenter';
@@ -11,16 +12,19 @@ import * as act from '../state/actions';
 import { photoSurface, photoSurfaceName, type DesignDoc, type PhotoSurface } from '../state/document';
 import type { Store } from '../state/store';
 import { h } from '../ui/dom';
-import type { Drag, PointerPoint } from '../ui/gestures';
+import { MAGNET_PX, type Drag, type PointerPoint } from '../ui/gestures';
+import { applyStrokes } from './brush';
 import { loadPhoto, loadPhotoFromUrl, pickPhotoFile, type Photo } from './capture';
 import { insidePolygon, isConvexQuad, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline } from './fit';
 import { FitCard } from './fitCard';
-import { apply, type Mat3, type Pt, type Quad } from './homography';
+import { apply, invert, type Mat3, type Pt, type Quad } from './homography';
 import { drawLoupe } from './loupe';
 import { convexHull, fitQuad, regionAt, rowExtremes, type Mask } from './maskToQuad';
 import { PhotoView, type PhotoTransform, type Sample } from './photoView';
+import { dragDeltaMm, pixelsPerMm } from './pointer';
 import { cssColour, labelShares, paintMask, paintRegions, REGION_STYLES, styleFor } from './regions';
 import { shadingMap } from './shading';
+import { BRUSH_MAX_PX, BRUSH_MIN_PX, PhotoTools, type PhotoTool } from './tools';
 
 /** Segmentation and masks work on the photo at up to this many pixels on its long side. */
 export const WORK_SIDE = 1024;
@@ -61,6 +65,8 @@ interface SurfaceView {
   outline: Quad | null;
   /** Its segmentation region, at the working size. */
   region: Mask | null;
+  /** The region with the brush strokes applied: where tiles go. */
+  edited: Mask | null;
   /** The region, tinted, for highlighting. */
   tint: HTMLCanvasElement | null;
   /** The region as an alpha mask, for clipping the grid and the region colours. */
@@ -115,11 +121,7 @@ function smallImage(photo: Photo): RGBAImage {
 /** The room's lighting over a region, from the small photo. */
 function roomLighting(small: RGBAImage, region: Mask): Plane {
   // The region's coverage of each small pixel (it is at the working size, four times bigger).
-  const data = new Uint8ClampedArray(region.width * region.height * 4);
-  for (let i = 0; i < region.data.length; i++) data[i * 4] = region.data[i] ? 255 : 0;
-  const shrunk = resizeArea({ width: region.width, height: region.height, data }, small.width, small.height);
-  const coverage = new Float32Array(small.width * small.height);
-  for (let i = 0; i < coverage.length; i++) coverage[i] = shrunk.data[i * 4]! / 255;
+  const coverage = resizePlane(region.data, region.width, region.height, small.width, small.height);
   return shadingMap(small, coverage, Math.max(2, Math.round(SHADING_BLUR * SHADING_SIDE)));
 }
 
@@ -159,6 +161,20 @@ export class PhotoMode {
   private doc: DesignDoc;
   private readonly views = new Map<string, SurfaceView>();
   private drag: CornerDrag | null = null;
+  /** What a drag on a tiled surface does. */
+  tool: PhotoTool = 'pattern';
+  /** Brush radius in screen pixels: zooming in gives a finer brush. */
+  brushPx = 18;
+  /** Shows the perspective grid and centreline over the tiles. */
+  showGuides = false;
+  /** While the pattern is dragged: its edge cuts and guides show. */
+  private patternDragging = false;
+  /** The brush's circle, while painting. */
+  private brushAt: PointerPoint | null = null;
+  private strokeId = Date.now();
+  /** The region the last tap found, so the new surface doesn't flood-fill it again. */
+  private lastRegion: { segmentation: Segmentation; label: number; seed: Pt; region: Mask } | null = null;
+  private readonly tools: PhotoTools;
   /** The status or legend floating at the top of the photo. */
   private readonly top: HTMLElement;
   private readonly card: FitCard;
@@ -188,7 +204,8 @@ export class PhotoMode {
         if (surface) this.store.commit((d) => act.removePhotoSurface(d, surface.id));
       },
     });
-    this.view.el.append(this.top, this.card.el);
+    this.tools = new PhotoTools({ setTool: (tool) => this.setTool(tool), setBrush: (px) => this.setBrush(px) });
+    this.view.el.append(this.top, this.card.el, this.tools.el);
     const compositor = options.webgl ? new TileCompositor(textures) : null;
     this.compositor = compositor?.available ? compositor : null;
     if (this.compositor) {
@@ -196,11 +213,16 @@ export class PhotoMode {
       this.compositor.onRestored = () => this.view.requestDraw();
     }
     this.view.onFrame = () => this.renderTiles();
-    // While the card shows, the photo fits above it, so no corner hides behind it.
-    new ResizeObserver(() => this.view.setBottomInset(this.card.el.hidden ? 0 : this.card.el.offsetHeight + 24)).observe(this.card.el);
+    // While the card or the tools show, the photo fits above them, so nothing hides behind them.
+    const inset = new ResizeObserver(() => {
+      const below = [this.card.el, this.tools.el].filter((el) => !el.hidden).map((el) => el.offsetHeight + 24);
+      this.view.setBottomInset(Math.max(0, ...below));
+    });
+    inset.observe(this.card.el);
+    inset.observe(this.tools.el);
     this.view.interaction = {
       tap: (p) => this.tap(p),
-      dragStart: (_p, screen) => this.startCornerDrag(screen),
+      dragStart: (p, screen) => this.dragStart(p, screen),
       longPress: (_p, screen) => this.startCornerDrag(screen),
       drawOverlay: (ctx, t, frame) => this.drawOverlay(ctx, t, frame),
     };
@@ -233,6 +255,7 @@ export class PhotoMode {
     for (const id of this.views.keys()) if (!doc.photo.some((s) => s.id === id)) this.views.delete(id);
     this.renderTop();
     this.renderCard();
+    this.renderTools();
     this.view.requestDraw();
   }
 
@@ -269,10 +292,37 @@ export class PhotoMode {
     return this.compositor.readPixel(t.x + x * t.scale, t.y + y * t.scale, this.view.size.dpr);
   }
 
+  setTool(tool: PhotoTool): void {
+    this.tool = tool;
+    this.renderTools();
+  }
+
+  setBrush(px: number): void {
+    this.brushPx = Math.min(BRUSH_MAX_PX, Math.max(BRUSH_MIN_PX, px));
+  }
+
+  setShowGuides(show: boolean): void {
+    this.showGuides = show;
+    this.view.requestDraw();
+    this.hooks.changed();
+  }
+
   setShowRegions(show: boolean): void {
     this.showRegions = show;
     this.view.requestDraw();
     this.hooks.changed();
+  }
+
+  /** Takes away a surface's brush corrections (one undo step). */
+  clearBrush(id: PhotoSurface['id']): void {
+    this.store.commit((d) => act.clearStrokes(d, id));
+  }
+
+  /** A point on a surface (mm) in photo pixels, or null before its corners make sense; for the browser check. */
+  surfacePoint(id: PhotoSurface['id'], at: Pt): Pt | null {
+    const surface = photoSurface(this.doc, id);
+    const toPhoto = surface && this.surfaceView(surface).toPhoto;
+    return toPhoto ? apply(toPhoto, at) : null;
   }
 
   /** Puts a confirmed surface back into corner fitting. */
@@ -342,23 +392,30 @@ export class PhotoMode {
     const outline = toPhoto && surfaceOutline(toPhoto, plan.surface);
     // The region only depends on the tap and the segmentation, so keep it while corners move.
     const sameRegion = cached && cached.segmentation === segmentation && cached.surface.seed === surface.seed;
+    const label = plan.layout.surface === 'wall' ? WALL : FLOOR;
     let region = sameRegion ? cached.region : null;
+    if (!sameRegion && segmentation && this.photo) region = this.regionFor(segmentation, surface.seed, label);
+    // Each of the rest is made only when it is drawn: the tint while the corners are placed; the
+    // mask, its clip and the lighting once the surface is tiled. A tap on a wall stays quick.
+    const fitting = !surface.fit.confirmed;
     let tint = sameRegion ? cached.tint : null;
-    let clip = sameRegion ? cached.clip : null;
-    let mask = sameRegion ? cached.mask : null;
-    let shading = sameRegion ? cached.shading : null;
-    if (!sameRegion && segmentation && this.photo) {
-      const label = plan.layout.surface === 'wall' ? WALL : FLOOR;
-      const sx = segmentation.width / this.photo.width;
-      const sy = segmentation.height / this.photo.height;
-      region = regionAt({ width: segmentation.width, height: segmentation.height, data: labelMask(segmentation.labels, label) }, { x: surface.seed.x * sx, y: surface.seed.y * sy });
+    if (fitting && !tint && region) {
       const style = styleFor(label);
       // Light, so the wall's own edges stay visible while its corners are placed.
-      tint = region && paintMask(region.width, region.height, (i) => (region!.data[i] ? style : undefined), 0.6);
-      clip = region && alphaCanvas(region);
+      tint = paintMask(region.width, region.height, (i) => (region!.data[i] ? style : undefined), 0.6);
+    }
+    let shading = sameRegion ? cached.shading : null;
+    if (!fitting && !shading && region && this.small) shading = roomLighting(this.small, region);
+    // Brush strokes change only where the tiles go.
+    const sameEdits = sameRegion && cached.surface.strokes === surface.strokes;
+    let edited = sameEdits ? cached.edited : null;
+    let clip = sameEdits ? cached.clip : null;
+    let mask = sameEdits ? cached.mask : null;
+    if (!fitting && !edited && region && this.photo) {
+      edited = surface.strokes.length > 0 ? applyStrokes(region, surface.strokes, this.photo) : region;
+      clip = alphaCanvas(edited);
       // Feathered by a pixel of the working size (about 2 photo pixels), then filtered linearly by the GPU.
-      mask = region && { width: region.width, height: region.height, data: featherMask(region.data, region.width, region.height, 1) };
-      shading = region && this.small && roomLighting(this.small, region);
+      mask = { width: edited.width, height: edited.height, data: featherMask(edited.data, edited.width, edited.height, 1) };
     }
     let grid: Pt[][] = [];
     let result: LayoutResult | null = null;
@@ -378,15 +435,39 @@ export class PhotoMode {
         console.warn('Could not lay out the photo surface', error);
       }
     }
-    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, tint, clip, mask, shading, result, grid };
+    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, edited, tint, clip, mask, shading, result, grid };
     this.views.set(surface.id, view);
     return view;
   }
 
-  /** Selects the surface under a tap, or adds the wall or floor there. */
+  /** A surface being edited that is tiled: the pattern and brush tools work on it. */
+  private tiledSurface(): PhotoSurface | null {
+    const surface = this.activeSurface();
+    return surface && surface.fit.confirmed ? surface : null;
+  }
+
+/** The segmentation region a surface's tap seed falls in (working size), reusing the one the tap just found. */
+  private regionFor(segmentation: Segmentation, seed: Pt, label: number): Mask | null {
+    const last = this.lastRegion;
+    if (last && last.segmentation === segmentation && last.label === label && last.seed.x === seed.x && last.seed.y === seed.y) return last.region;
+    if (!this.photo) return null;
+    const sx = segmentation.width / this.photo.width;
+    const sy = segmentation.height / this.photo.height;
+    return regionAt({ width: segmentation.width, height: segmentation.height, data: labelMask(segmentation.labels, label) }, { x: seed.x * sx, y: seed.y * sy });
+  }
+
+  /** Selects the surface under a tap, or adds the wall or floor there. With the brush, paints a dot. */
   private tap(p: Pt): void {
     const photo = this.photo;
     if (!photo) return;
+    const tiled = this.tiledSurface();
+    if (tiled && this.tool !== 'pattern') {
+      const t = this.view.view;
+      if (!t) return;
+      const mode = this.tool;
+      this.store.commit((d) => act.paintStroke(d, tiled.id, { id: this.strokeId++, mode, radius: this.brushPx / t.scale, points: [{ x: p.x, y: p.y }] }));
+      return;
+    }
     // An existing surface: edit it (the one being edited wins where outlines overlap).
     const contains = (s: PhotoSurface) => {
       const outline = this.surfaceView(s).outline;
@@ -425,12 +506,102 @@ export class PhotoMode {
     }
     const mask: Mask = { width: segmentation.width, height: segmentation.height, data: labelMask(segmentation.labels, label) };
     const fit = fitQuad(mask, { x: x + 0.5, y: y + 0.5 }, { width: segmentation.width, height: segmentation.height, data: exclude });
+    const region = regionAt(mask, { x, y });
+    if (region) this.lastRegion = { segmentation, label, seed: { x: p.x, y: p.y }, region };
     if (!fit) {
       this.hooks.toast('That part is already tiled. Tap another wall or the floor.');
       return;
     }
     const quad = fit.quad.map((q) => ({ x: q.x / sx, y: q.y / sy })) as Quad;
     this.store.commit((d) => act.addPhotoSurface(d, { photoId: photo.id, kind: label === WALL ? 'wall' : 'floor', seed: { x: p.x, y: p.y }, quad, starter: fit.starter }));
+  }
+
+  /**
+   * A one-finger drag: a corner while fitting; on a tiled surface, the pattern (from inside its
+   * outline) or the brush; anywhere else it pans.
+   */
+  private dragStart(p: Pt, screen: PointerPoint): Drag | null {
+    const surface = this.activeSurface();
+    if (!surface) return null;
+    if (!surface.fit.confirmed) return this.startCornerDrag(screen);
+    if (this.tool !== 'pattern') return this.startBrush(surface, screen);
+    const outline = this.surfaceView(surface).outline;
+    return outline && insidePolygon(outline, p) ? this.startPatternDrag(surface, screen) : null;
+  }
+
+  /**
+   * Moves the pattern with the finger: the pointer goes through the inverse homography into
+   * millimetres on the surface, and the designer's snapping and magnets do the rest. The magnet
+   * radius is the designer's, in screen pixels, turned into millimetres where the finger is.
+   */
+  private startPatternDrag(surface: PhotoSurface, screen: PointerPoint): Drag | null {
+    const view = this.surfaceView(surface);
+    const toPhoto = view.toPhoto;
+    const toSurface = toPhoto && invert(toPhoto);
+    if (!toPhoto || !toSurface || !view.result) return null;
+    const start = { origin: view.result.origin, overrides: surface.plan.overrides, tile: view.result.tile };
+    const from = this.view.toPhoto(screen);
+    this.patternDragging = true;
+    this.view.requestDraw();
+    const finish = () => {
+      this.patternDragging = false;
+      this.view.requestDraw();
+    };
+    return {
+      move: (p) => {
+        const t = this.view.view;
+        if (!t) return;
+        const to = this.view.toPhoto(p);
+        const delta = dragDeltaMm(toSurface, from, to);
+        const magnetMm = MAGNET_PX / Math.max(1e-6, pixelsPerMm(toPhoto, apply(toSurface, to)) * t.scale);
+        const raw = { x: start.origin.x + delta.x, y: start.origin.y + delta.y };
+        this.store.preview((d) => act.dragPattern(d, start, raw, magnetMm, this.catalog));
+      },
+      end: () => {
+        this.store.endGesture();
+        finish();
+      },
+      cancel: () => {
+        this.store.cancelGesture();
+        finish();
+      },
+    };
+  }
+
+  /** Paints one stroke while the finger moves: one undo step. */
+  private startBrush(surface: PhotoSurface, screen: PointerPoint): Drag | null {
+    const t = this.view.view;
+    if (!t || this.tool === 'pattern') return null;
+    const stroke = { id: this.strokeId++, mode: this.tool, radius: this.brushPx / t.scale, points: [this.view.toPhoto(screen)] };
+    const paint = () => this.store.preview((d) => act.paintStroke(d, surface.id, { ...stroke, points: [...stroke.points] }));
+    this.brushAt = screen;
+    paint();
+    const finish = () => {
+      this.brushAt = null;
+      this.view.requestDraw();
+    };
+    return {
+      move: (p) => {
+        const at = this.view.toPhoto(p);
+        const last = stroke.points[stroke.points.length - 1]!;
+        this.brushAt = p;
+        // Points closer than a quarter of the radius add nothing to the stroke.
+        if (Math.hypot(at.x - last.x, at.y - last.y) < stroke.radius / 4) {
+          this.view.requestDraw();
+          return;
+        }
+        stroke.points.push(at);
+        paint();
+      },
+      end: () => {
+        this.store.endGesture();
+        finish();
+      },
+      cancel: () => {
+        this.store.cancelGesture();
+        finish();
+      },
+    };
   }
 
   /** A press near a corner of the surface being fitted drags that corner; anywhere else pans. */
@@ -581,6 +752,12 @@ export class PhotoMode {
     }
   }
 
+  private renderTools(): void {
+    const tiled = this.tiledSurface();
+    this.tools.update(tiled ? { tool: this.tool, brushPx: this.brushPx } : null);
+    this.view.overlayCanvas.style.cursor = tiled ? (this.tool === 'pattern' ? 'grab' : 'crosshair') : '';
+  }
+
   private renderCard(): void {
     const surface = this.activeSurface();
     if (!surface || surface.fit.confirmed) {
@@ -614,8 +791,9 @@ export class PhotoMode {
       const isActive = surface === active;
       const fitting = isActive && !surface.fit.confirmed;
       if (fitting && view.tint) ctx.drawImage(view.tint, t.x, t.y, width, height);
-      // Without WebGL the grid shows where the tiles go; with it, the tiles speak for themselves.
-      if (!this.compositor && view.grid.length > 0) this.drawGrid(ctx, view, t, frame, width, height);
+      // Without WebGL the grid shows where the tiles go; with it, only when asked for (Show grid).
+      if ((!this.compositor || (this.showGuides && surface.fit.confirmed)) && view.grid.length > 0) this.drawGrid(ctx, view, t, frame, width, height);
+      if (surface.fit.confirmed && ((isActive && this.patternDragging) || this.showGuides)) this.drawGuides(ctx, view, t, isActive && this.patternDragging);
       if (this.compositor && surface.fit.confirmed && !isActive) continue;
       const outline = fitting ? surface.fit.quad : view.outline;
       if (!outline) continue;
@@ -639,6 +817,82 @@ export class PhotoMode {
     const drag = this.drag;
     const dragged = drag && photoSurface(this.doc, drag.id);
     if (drag && dragged) drawLoupe(ctx, photo, t, frame, dragged.fit.quad, drag.corner);
+    if (this.brushAt) this.drawBrush(ctx, this.brushAt);
+  }
+
+  /**
+   * The centreline in perspective, and while the pattern is dragged its motif centres and each
+   * edge's cut (red below the minimum), as the designer shows them.
+   */
+  private drawGuides(ctx: CanvasRenderingContext2D, view: SurfaceView, t: PhotoTransform, live: boolean): void {
+    const { result, toPhoto } = view;
+    if (!result || !toPhoto) return;
+    const toScreen = (p: Pt) => {
+      const q = apply(toPhoto, p);
+      return { x: t.x + q.x * t.scale, y: t.y + q.y * t.scale };
+    };
+    const W = result.widthMm;
+    const top = result.tiledHeightMm;
+    ctx.save();
+    ctx.setLineDash([7, 5]);
+    ctx.lineWidth = 1.5;
+    for (const guide of result.guides) {
+      if (guide.kind !== 'centre') continue;
+      const [a, b] = guide.orientation === 'vertical' ? [toScreen({ x: guide.atMm, y: 0 }), toScreen({ x: guide.atMm, y: top })] : [toScreen({ x: 0, y: guide.atMm }), toScreen({ x: W, y: guide.atMm })];
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.strokeStyle = COLOURS.guide;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    ctx.restore();
+    if (!live) return;
+    for (const c of result.motifCentres) {
+      const s = toScreen(c);
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = COLOURS.motif;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+    }
+    // Each label sits 30 px in from the middle of its edge, towards the surface's centre.
+    const centre = toScreen({ x: W / 2, y: top / 2 });
+    const middles = { left: { x: 0, y: top / 2 }, right: { x: W, y: top / 2 }, bottom: { x: W / 2, y: 0 }, top: { x: W / 2, y: top } };
+    for (const edge of ['left', 'right', 'bottom', 'top'] as const) {
+      const at = toScreen(middles[edge]);
+      const length = Math.hypot(centre.x - at.x, centre.y - at.y) || 1;
+      const x = at.x + ((centre.x - at.x) / length) * 30;
+      const y = at.y + ((centre.y - at.y) / length) * 30;
+      const size = result.edgeCuts[edge];
+      if (size === null) {
+        pill(ctx, 'full', x, y, COLOURS.ok, false);
+        continue;
+      }
+      const sliver = size < (edge === 'left' || edge === 'right' ? result.minCutMm.x : result.minCutMm.y) - 1e-6;
+      pill(ctx, `${formatMm(size)} mm`, x, y, sliver ? COLOURS.sliver : COLOURS.dims, sliver);
+    }
+  }
+
+  /** The brush's circle under the finger, green to add and red to take away. */
+  private drawBrush(ctx: CanvasRenderingContext2D, at: PointerPoint): void {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, this.brushPx, 0, Math.PI * 2);
+    ctx.fillStyle = this.tool === 'add' ? 'rgba(26, 127, 55, 0.18)' : 'rgba(217, 45, 32, 0.18)';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+    ctx.restore();
   }
 
   /** The region colours, except where tiles are drawn (they would tint the tiles' soft edges). */

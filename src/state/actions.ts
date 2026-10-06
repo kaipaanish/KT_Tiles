@@ -7,7 +7,9 @@ import {
   LayoutError,
   nextRotation,
   parseCellKey,
+  rebaseOverrides,
   resolveAlignment,
+  snapPatternOffset,
   validateBands,
   type Alignment,
   type Band,
@@ -16,6 +18,7 @@ import {
   type CellOverride,
   type DesignSlot,
   type Overrides,
+  type Point,
   type Rotation,
   type Surface,
   type SurfaceType,
@@ -31,6 +34,7 @@ import {
   wallBandsFor,
   type DesignDoc,
   type FloorLayout,
+  type BrushStroke,
   type PhotoFit,
   type PhotoSurface,
   type PhotoSurfaceId,
@@ -95,6 +99,26 @@ export function setAlignment(doc: DesignDoc, alignment: Alignment, overrides?: O
   const plan = activePlan(doc);
   const same = JSON.stringify(plan.alignment) === JSON.stringify(alignment) && (overrides === undefined || overrides === plan.overrides);
   return same ? doc : patchActive(doc, overrides ? { alignment, overrides } : { alignment });
+}
+
+/** Where a pattern drag started: the grid's origin and the single-tile changes at that moment. */
+export interface PatternDragStart {
+  origin: Point;
+  overrides: Overrides;
+  tile: { w: number; h: number };
+}
+
+/**
+ * Moves the pattern to where a drag puts its origin (raw, in mm), snapped: half-tile steps, or a
+ * magnet (centred joint, tile or motif, a flush edge) within magnetMm. The same in the designer
+ * and on the photo. A named alignment's own origin can be whole repeats away from where the drag
+ * put it, so single-tile changes are re-keyed to stay on the same tiles.
+ */
+export function dragPattern(doc: DesignDoc, start: PatternDragStart, raw: Point, magnetMm: number, catalog: Catalog): DesignDoc {
+  const plan = activePlan(doc);
+  const snap = snapPatternOffset(plan.surface, plan.layout, catalog, raw, magnetMm);
+  const named = resolveAlignment(plan.surface, plan.layout, snap.alignment, catalog).origin;
+  return setAlignment(doc, snap.alignment, rebaseOverrides(start.overrides, snap.origin, named, start.tile));
 }
 
 export function setSettings(doc: DesignDoc, patch: Partial<Settings>): DesignDoc {
@@ -394,7 +418,7 @@ export function addPhotoSurface(doc: DesignDoc, input: NewPhotoSurface): DesignD
     confirmed: false,
     starter: input.starter,
   };
-  return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit }] };
+  return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit, strokes: [] }] };
 }
 
 export function setPhotoFit(doc: DesignDoc, id: PhotoSurfaceId, patch: Partial<PhotoFit>): DesignDoc {
@@ -433,6 +457,22 @@ export function fitToRectangle(
   const plan = { ...surface.plan, surface: wall ? { widthMm, heightMm, tiledHeightMm: heightMm } : { widthMm, heightMm } };
   const fit: PhotoFit = { ...surface.fit, marks: 'rectangle', rect: { x: -extent.minX, y: -extent.minY, w: size.w, h: size.h } };
   return { ...doc, photo: doc.photo.map((s) => (s === surface ? ({ ...s, plan, fit } as PhotoSurface) : s)) };
+}
+
+/** Draws a brush stroke on a surface: a new stroke, or the one being drawn (same id) grown. */
+export function paintStroke(doc: DesignDoc, id: PhotoSurfaceId, stroke: BrushStroke): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface || stroke.points.length === 0) return doc;
+  const last = surface.strokes[surface.strokes.length - 1];
+  const strokes = last && last.id === stroke.id ? [...surface.strokes.slice(0, -1), stroke] : [...surface.strokes, stroke];
+  return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, strokes } : s)) };
+}
+
+/** Takes away every brush correction on a surface. */
+export function clearStrokes(doc: DesignDoc, id: PhotoSurfaceId): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface || surface.strokes.length === 0) return doc;
+  return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, strokes: [] } : s)) };
 }
 
 export function removePhotoSurface(doc: DesignDoc, id: PhotoSurfaceId): DesignDoc {

@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. Still to come: editing on the photo (dragging the pattern, the correction brush), and the before/after slider and sharing.
+- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, and a brush corrects where tiles go. Still to come: the before/after slider and sharing.
 
 ## Using it
 
@@ -65,6 +65,11 @@ The tiles then appear on the surface in perspective, behind fixtures, keeping th
 - The Design, Tiles, Align and Count tabs change the surface being edited ("Editing Wall in the photo"). A wall can use one series and the floor another.
 - Tap a surface to edit it. The Photo tab lists them, with **Corners** to fit one again and **Remove**.
 - **Designer** shows the surface being edited flat, with "Photo wall:" in the size chip. **Wall** or **Floor** there goes back to the designer's own surfaces.
+
+**Editing on the photo:** with a tiled surface selected, a bar under the photo offers three tools.
+- **Pattern**: drag on the tiles to move the pattern. The snapping, magnets and edge-cut labels are the designer's, and the centreline shows in perspective while you drag. On a phone, zoom in for fine moves.
+- **Add** and **Remove**: a brush for where tiles go. Paint over a tap or a mirror the wall finder took for wall, or over a gap it missed. Each stroke is one undo step. **Size** sets the brush, and zooming in makes it finer. **Clear brush changes** in the Photo tab removes them all.
+- **Show grid and centreline**, in the Photo tab, draws the tile grid and centreline in perspective over the tiles.
 
 Photos stay on the device. They are never uploaded and never saved, so closing the page loses them. While a photo has surfaces that haven't been shared, the browser asks before you leave the page.
 
@@ -400,6 +405,24 @@ Where the brief was ambiguous, these are the choices made.
 70. **The tiles are drawn at the screen's pixel ratio** (up to 3×) and again with every zoom and pan. The shared picture, still to come, will be drawn at the photo's own resolution.
 71. **Without WebGL2, the tile grid shows where the tiles go**, and the Photo tab says why. `?webgl=0` forces this, for checks.
 72. **The region colours stay off tiled areas**: they are cut out where tiles are drawn. Otherwise the colour would tint the tiles' soft edges, while untiled walls should still be coloured to invite a tap.
+
+**Editing on the photo**
+
+73. **The pattern drag on the photo is the designer's.** Both views call the same action for snapping, magnets and re-keying single-tile changes.
+    - On the photo the pointer goes through the surface's inverse homography into millimetres.
+    - The magnet radius is the designer's 14 screen pixels, turned into millimetres where the finger is. The far end of a floor, which is smaller on screen, therefore gets a larger magnet in millimetres.
+    - While dragging, the centreline, motif centres and edge cuts are drawn in perspective. Each label sits 30 px in from the middle of its edge.
+74. **On a phone, zoom in for fine moves.** At fit size, 150 mm on a 2.4 m wall can be under the 8 px it takes for a touch to count as a drag. As in the designer, the magnets do most of the work at that size.
+75. **Brush strokes are part of the design document**, so they are undoable, one step per stroke.
+    - The radius is set in screen pixels when painting, so zooming in gives a finer brush.
+    - Strokes are applied in order to the wall finder's region, at the working size.
+    - The room lighting stays based on the wall finder's region, because brush strokes are small corrections.
+76. **The tool bar shows for a tiled surface being edited.** Pattern is the default. With a brush selected, a tap paints a dot, and the cursor shows which tool is active.
+77. **Double taps are timed by the touches' own timestamps**, not by when they are handled. A slow first tap (adding a surface) used to push the second past the double-tap window, so the photo didn't fit.
+78. **Tapping a wall stays quick.**
+    - A new surface's mask, lighting map and clip are made only when it is tiled (Done), and the region the tap found is reused.
+    - The per-pixel loops (flood fill, feathering, box filter) no longer allocate per pixel, and they read memory in order.
+    - In headless desktop Chrome, a tap that adds a surface went from about 480 ms to 120–150 ms. This should be checked again on a phone.
 
 ## Step 1 checklist
 

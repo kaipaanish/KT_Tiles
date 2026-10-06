@@ -73,6 +73,29 @@ export function resizeArea(image: RGBAImage, width: number, height: number): RGB
   return { width, height, data: out };
 }
 
+/** Scales a single-channel map down by averaging the pixels each output pixel covers, as resizeArea does. */
+export function resizePlane(src: ArrayLike<number>, sw: number, sh: number, width: number, height: number): Float32Array {
+  const xTaps = areaTaps(sw, width);
+  const yTaps = areaTaps(sh, height);
+  const rows = new Float32Array(sh * width);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      for (const { index, weight } of xTaps[x]!) sum += src[y * sw + index]! * weight;
+      rows[y * width + x] = sum;
+    }
+  }
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (const { index, weight } of yTaps[y]!) {
+      const from = index * width;
+      const to = y * width;
+      for (let x = 0; x < width; x++) out[to + x] = out[to + x]! + rows[from + x]! * weight;
+    }
+  }
+  return out;
+}
+
 /** Where output pixel centres fall between input pixel centres along one axis. */
 interface Lerp {
   i0: Int32Array;
@@ -118,29 +141,40 @@ export function upsampleBilinear(src: Float32Array, sw: number, sh: number, widt
 
 /** Mean over a (2r+1)² window, the window clipped at the image edges. */
 export function boxFilter(src: Float32Array, width: number, height: number, r: number): Float32Array {
+  // 1 / (pixels in the clipped window) along each axis; the same for every row or column.
+  const across = new Float32Array(width);
+  for (let x = 0; x < width; x++) across[x] = 1 / (Math.min(width - 1, x + r) - Math.max(0, x - r) + 1);
+  const down = new Float32Array(height);
+  for (let y = 0; y < height; y++) down[y] = 1 / (Math.min(height - 1, y + r) - Math.max(0, y - r) + 1);
   const rows = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     const row = y * width;
     let sum = 0;
     for (let x = 0; x <= Math.min(r, width - 1); x++) sum += src[row + x]!;
     for (let x = 0; x < width; x++) {
-      const lo = Math.max(0, x - r);
-      const hi = Math.min(width - 1, x + r);
-      rows[row + x] = sum / (hi - lo + 1);
+      rows[row + x] = sum * across[x]!;
       if (x + r + 1 < width) sum += src[row + x + r + 1]!;
       if (x - r >= 0) sum -= src[row + x - r]!;
     }
   }
+  // Down the columns with a running sum per column, a row at a time (memory in order).
   const out = new Float32Array(width * height);
-  for (let x = 0; x < width; x++) {
-    let sum = 0;
-    for (let y = 0; y <= Math.min(r, height - 1); y++) sum += rows[y * width + x]!;
-    for (let y = 0; y < height; y++) {
-      const lo = Math.max(0, y - r);
-      const hi = Math.min(height - 1, y + r);
-      out[y * width + x] = sum / (hi - lo + 1);
-      if (y + r + 1 < height) sum += rows[(y + r + 1) * width + x]!;
-      if (y - r >= 0) sum -= rows[(y - r) * width + x]!;
+  const sums = new Float64Array(width);
+  for (let y = 0; y <= Math.min(r, height - 1); y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) sums[x] = sums[x]! + rows[row + x]!;
+  }
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    const scale = down[y]!;
+    for (let x = 0; x < width; x++) out[row + x] = sums[x]! * scale;
+    const add = y + r + 1 < height ? (y + r + 1) * width : -1;
+    const drop = y - r >= 0 ? (y - r) * width : -1;
+    for (let x = 0; x < width; x++) {
+      let s = sums[x]!;
+      if (add >= 0) s += rows[add + x]!;
+      if (drop >= 0) s -= rows[drop + x]!;
+      sums[x] = s;
     }
   }
   return out;
@@ -400,9 +434,13 @@ export function labelMask(labels: Uint8Array, label: number): Uint8Array {
  */
 export function featherMask(mask: Uint8Array, width: number, height: number, radius: number): Uint8Array {
   const r = Math.max(1, Math.round(radius / 2));
-  const hard = Float32Array.from(mask, (v) => (v ? 1 : 0));
+  // Plain loops: typed-array from() with a callback costs a function call per pixel.
+  const hard = new Float32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) hard[i] = mask[i] ? 1 : 0;
   const soft = boxFilter(boxFilter(hard, width, height, r), width, height, r);
-  return Uint8Array.from(soft, (v) => Math.round(v * 255));
+  const out = new Uint8Array(soft.length);
+  for (let i = 0; i < soft.length; i++) out[i] = Math.round(soft[i]! * 255);
+  return out;
 }
 
 // ---- The whole clean-up -------------------------------------------------------------------------------

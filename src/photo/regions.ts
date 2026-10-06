@@ -43,10 +43,17 @@ export function paintRegions(segmentation: Segmentation): HTMLCanvasElement {
   return paintMask(segmentation.width, segmentation.height, (i) => styleFor(segmentation.labels[i]!));
 }
 
-/** The share of the image each label covers (0–1). */
-export function labelShares(segmentation: Segmentation): Record<'wall' | 'floor' | 'ceiling' | 'other', number> {
+type Shares = Record<'wall' | 'floor' | 'ceiling' | 'other', number>;
+const sharesOf = new WeakMap<Segmentation, Shares>();
+
+/** The share of the image each label covers (0–1), counted once per segmentation. */
+export function labelShares(segmentation: Segmentation): Shares {
+  const known = sharesOf.get(segmentation);
+  if (known) return known;
   const counts = [0, 0, 0, 0];
   for (const label of segmentation.labels) counts[label] = (counts[label] ?? 0) + 1;
   const n = segmentation.labels.length || 1;
-  return { other: counts[0]! / n, wall: counts[WALL]! / n, floor: counts[FLOOR]! / n, ceiling: counts[CEILING]! / n };
+  const shares = { other: counts[0]! / n, wall: counts[WALL]! / n, floor: counts[FLOOR]! / n, ceiling: counts[CEILING]! / n };
+  sharesOf.set(segmentation, shares);
+  return shares;
 }

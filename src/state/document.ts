@@ -53,6 +53,16 @@ export interface PhotoFit {
   starter: boolean;
 }
 
+/** A brush stroke on a photo surface's mask: where tiles are added or taken away. */
+export interface BrushStroke {
+  /** Identifies the stroke being drawn, so a drag grows one stroke (one undo step). */
+  id: number;
+  mode: 'add' | 'remove';
+  /** In photo pixels. */
+  radius: number;
+  points: Pt[];
+}
+
 /** A wall or floor picked in the photo, with a design of its own. */
 export interface PhotoSurface<L extends Layout = Layout> {
   id: PhotoSurfaceId;
@@ -62,6 +72,8 @@ export interface PhotoSurface<L extends Layout = Layout> {
   seed: Pt;
   plan: SurfacePlan<L>;
   fit: PhotoFit;
+  /** Corrections to the segmentation's region, in order. */
+  strokes: BrushStroke[];
 }
 
 /** The undoable design: the designer's wall and floor, surfaces picked in a photo, and which one is being edited. */

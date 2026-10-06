@@ -65,7 +65,7 @@ export function photoTab(ctx: TabContext): HTMLElement {
     if (mode.status.state === 'failed') {
       content.append(h('button', { type: 'button', class: 'pill-button', onclick: () => mode.retry() }, 'Try again'));
     }
-    root.append(section('Walls and floor', content, 'The wall finder runs on this device. It is downloaded once (about 4 MB); your photo never leaves the device.'));
+    root.append(section('Walls and floor', content, 'The wall finder runs on this device. It is downloaded the first time (4–15 MB, depending on the device) and kept by the browser; your photo never leaves the device.'));
   }
 
   root.append(

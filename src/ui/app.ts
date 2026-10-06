@@ -195,10 +195,10 @@ export function startApp(root: HTMLElement): void {
       toast: (message) => toast(stage, message),
     },
     {
-      // For checks and comparisons: ?segmenter=fake skips the model, ?backend=webgpu tries the GPU,
+      // For checks and comparisons: ?segmenter=fake skips the model, ?backend=wasm skips the GPU,
       // ?edges=bilinear turns off the photo-guided edges.
       segmenter: params.get('segmenter') === 'fake' ? 'fake' : 'model',
-      backend: params.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
+      backend: params.get('backend') === 'wasm' ? 'wasm' : 'webgpu',
       edges: params.get('edges') === 'bilinear' ? 'bilinear' : 'guided',
     },
   );

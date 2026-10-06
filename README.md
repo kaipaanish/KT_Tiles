@@ -53,7 +53,7 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 - Pinch or scroll to zoom, drag to pan, and double-tap to fit. You can zoom out past the photo's edge.
 - The **Photo** tab shows the current photo, offers another one, and lists the sample photos with their credits.
 
-When a photo opens, the **wall finder** marks the walls (blue), floor (orange) and ceiling (grey) on it. It runs on the device; the first time, it downloads about 4 MB, which the browser then keeps.
+When a photo opens, the **wall finder** marks the walls (blue), floor (orange) and ceiling (grey) on it. It runs on the device; the first time, it downloads 4–15 MB (depending on the device), which the browser then keeps.
 - Tap a wall or the floor to select it. Its four corners are fitted to it.
 - When one region covers two walls (a corner of the room, say), it doesn't get one forced quad. A starting rectangle is placed around the tap instead.
 - **Show regions** in the Photo tab hides or shows the colours.
@@ -103,7 +103,7 @@ These open the app on a particular design, for demos and checks:
 | `tab` | `align` | Open the panel on a tab |
 | `view` | `photo` | Open in photo mode |
 | `sample` | `old-bathroom-subway-tiles.jpg` | With `view=photo`: open that photo from `public/samples/` |
-| `backend` | `webgpu` | Run the wall finder on the GPU where the browser supports WebGPU (the default is WASM) |
+| `backend` | `wasm` | Run the wall finder on WASM even where WebGPU is available, for comparison |
 | `edges` | `bilinear` | Turn off the photo-guided edges, for comparison |
 | `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
@@ -191,7 +191,7 @@ Everything after the probabilities (sharpening edges, removing specks, fitting c
 
 **Network:** photos never leave the device. When the first photo is opened, the browser downloads:
 - Transformers.js 4.3.0 and the ONNX runtime's WASM file from jsDelivr
-- the model's files (4.4 MB, or 7.9 MB for WebGPU) from Hugging Face, pinned to one commit of the repository
+- the model's files from Hugging Face, pinned to one commit of the repository: 7.9 MB for WebGPU with fp16, 15.3 MB for WebGPU without fp16 support, or 4.4 MB for WASM
 
 All of it is cached by the browser, so later photos and visits don't download it again.
 
@@ -341,7 +341,7 @@ Where the brief was ambiguous, these are the choices made.
 **The wall finder**
 
 50. **Transformers.js is loaded from jsDelivr (pinned to 4.3.0), not installed from npm.** The npm package also installs onnxruntime-node (301 MB) and sharp, which a static site never uses. onnxruntime-node also downloads CUDA libraries during `npm install` on Linux x64, which includes Vercel's build machines. Loading the browser build at run time keeps installs and builds unchanged. The ONNX runtime's WASM comes from jsDelivr in either case.
-51. **The model runs on WASM (8-bit, 4.4 MB) by default. WebGPU is opt-in** with `?backend=webgpu`, using fp16 where the GPU supports it and falling back to WASM. Measured on the sample photo at 512 × 512, in headless Chrome on a laptop with an Intel GPU (not a phone):
+51. **WebGPU when available, otherwise WASM**, as the brief asks. WebGPU uses fp16 where the GPU supports it (7.9 MB) and fp32 where it doesn't (15.3 MB). WASM uses the 8-bit model (4.4 MB) and is also the fallback if WebGPU fails. `?backend=wasm` forces WASM. Measured on the sample photo at 512 × 512, in headless Chrome on a laptop with an Intel GPU (not a phone):
 
     | | Download | First run | Later runs | Labels matching fp32 |
     | --- | --- | --- | --- | --- |
@@ -349,7 +349,7 @@ Where the brief was ambiguous, these are the choices made.
     | WebGPU fp32 | 15.3 MB | 2.4 s | 0.8 s | 100% |
     | WebGPU fp16 | 7.9 MB | 3.7 s | 0.5 s | 99.95% |
 
-    Each photo is segmented once, so the download and the first run matter most, and WebGPU's first run includes compiling its shaders. This should be measured again on a real phone, where WebGPU may do better.
+    Each photo is segmented once, so the download and the first run matter most. On this laptop WASM gave the first result sooner, because WebGPU's first run includes compiling its shaders. Phone GPUs may change that, so the default stays as the brief has it until it has been timed on a real phone: open a sample with and without `?backend=wasm` and compare the times in the Photo tab.
 52. **The model sees the photo in its own shape**: about 640 px on the long side in multiples of 32 (640 × 480 for a 4:3 photo), rather than squashed into the 512 × 512 square it was trained on. It takes the same time and separates fixtures from the wall better: on the sample, the WC cistern and most of the towel are no longer labelled as wall.
 53. **Edges follow the photo (a guided filter).** The model labels cells of about 6 × 6 working pixels, and scaling its output up smoothly left visible bands of old wall around the basin and the WC in the sample (browser check `photo-edges`).
     - Each class's probability is passed through a colour guided filter (He, Sun and Tang) with the photo as the guide. Where the probability changes, it is refitted as a linear function of the photo's colour in a small window, so the edge moves onto the photo's own edge. With it, the edges hug the basin's rim and the side of the WC.

@@ -592,15 +592,16 @@ export const scenarios = [
     },
   },
   {
-    // ?backend=webgpu: WebGPU where the browser has it (fp16 if supported), WASM otherwise.
-    name: 'photo-webgpu',
+    // ?backend=wasm: the WASM path, which is also the fallback where WebGPU isn't available.
+    name: 'photo-wasm',
     devices: ['desktop'],
-    path: './?debug=1&view=photo&backend=webgpu&sample=old-bathroom-subway-tiles.jpg',
+    path: './?debug=1&view=photo&backend=wasm&sample=old-bathroom-subway-tiles.jpg',
     async run(page) {
       const seg = await segmented(page, 'Old bathroom with subway tiles');
       console.log(`    ${seg.model}; load ${seg.timings.load} ms, run ${seg.timings.run} ms, edges ${seg.timings.refine} ms (headless desktop Chrome)`);
       console.log(`    found wall ${pct(seg.shares.wall)}, floor ${pct(seg.shares.floor)}`);
-      assert(Math.abs(seg.shares.wall - 0.64) < 0.03, 'about the same wall as the WASM model');
+      assert(/WASM/.test(seg.model), `ran on WASM (${seg.model})`);
+      assert(Math.abs(seg.shares.wall - 0.64) < 0.03, 'about the same wall as on WebGPU');
     },
   },
   {

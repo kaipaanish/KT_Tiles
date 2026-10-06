@@ -1,7 +1,7 @@
 import samples from 'virtual:samples';
 import { formatMm, layoutSurface, type Catalog, type LayoutResult } from '../engine';
 import { COLOURS, pill } from '../render/renderer';
-import { TileCompositor, type Plane, type SurfaceScene } from '../render/webgl/compositor';
+import { TileCompositor, type Plane, type SurfaceScene, type TileFrame } from '../render/webgl/compositor';
 import type { TextureCache } from '../render/textureCache';
 import { FakeSegmenter } from '../segment/fakeSegmenter';
 import { featherMask, labelMask, resizePlane } from '../segment/postprocess';
@@ -14,6 +14,7 @@ import type { Store } from '../state/store';
 import { h } from '../ui/dom';
 import { MAGNET_PX, type Drag, type PointerPoint } from '../ui/gestures';
 import { applyStrokes } from './brush';
+import { CompareSlider } from './compare';
 import { loadPhoto, loadPhotoFromUrl, pickPhotoFile, type Photo } from './capture';
 import { insidePolygon, isConvexQuad, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline } from './fit';
 import { FitCard } from './fitCard';
@@ -175,6 +176,9 @@ export class PhotoMode {
   /** The region the last tap found, so the new surface doesn't flood-fill it again. */
   private lastRegion: { segmentation: Segmentation; label: number; seed: Pt; region: Mask } | null = null;
   private readonly tools: PhotoTools;
+  /** Before / after: the tiles show only to the right of the line. */
+  comparing = false;
+  private readonly compare: CompareSlider;
   /** The status or legend floating at the top of the photo. */
   private readonly top: HTMLElement;
   private readonly card: FitCard;
@@ -204,8 +208,9 @@ export class PhotoMode {
         if (surface) this.store.commit((d) => act.removePhotoSurface(d, surface.id));
       },
     });
-    this.tools = new PhotoTools({ setTool: (tool) => this.setTool(tool), setBrush: (px) => this.setBrush(px) });
-    this.view.el.append(this.top, this.card.el, this.tools.el);
+    this.tools = new PhotoTools({ setTool: (tool) => this.setTool(tool), setBrush: (px) => this.setBrush(px), setComparing: (on) => this.setComparing(on) });
+    this.compare = new CompareSlider(() => this.clipTiles());
+    this.view.el.append(this.compare.el, this.top, this.card.el, this.tools.el);
     const compositor = options.webgl ? new TileCompositor(textures) : null;
     this.compositor = compositor?.available ? compositor : null;
     if (this.compositor) {
@@ -290,6 +295,56 @@ export class PhotoMode {
     if (!this.compositor || !t) return null;
     this.renderTiles();
     return this.compositor.readPixel(t.x + x * t.scale, t.y + y * t.scale, this.view.size.dpr);
+  }
+
+  /** Before / after: the line over the photo, tiles only to its right. */
+  setComparing(on: boolean): void {
+    this.comparing = on && this.surfaces.some((s) => s.fit.confirmed);
+    this.compare.show(this.comparing);
+    this.clipTiles();
+    this.renderTop();
+    this.renderTools();
+    this.view.requestDraw();
+  }
+
+  /** Before / after: the tiles only to the right of the line (all of them otherwise). */
+  private clipTiles(): void {
+    if (this.compositor) this.compositor.canvas.style.clipPath = this.comparing ? `inset(0 0 0 ${(this.compare.split * 100).toFixed(2)}%)` : '';
+  }
+
+  /** The surfaces with tiles, named, for the shared picture's summary. */
+  shareSurfaces(): { name: string; plan: PhotoSurface['plan']; result: LayoutResult }[] {
+    return this.surfaces.flatMap((surface) => {
+      const result = surface.fit.confirmed ? this.surfaceView(surface).result : null;
+      return result ? [{ name: photoSurfaceName(this.doc, surface.id), plan: surface.plan, result }] : [];
+    });
+  }
+
+  /**
+   * The photo with its tiles at the photo's own size (up to 2048 px), for sharing. Null when
+   * nothing is tiled yet. Without WebGL, the tile grid stands in for the tiles.
+   */
+  composite(): HTMLCanvasElement | null {
+    const photo = this.photo;
+    const scenes = this.tileScenes();
+    if (!photo || scenes.length === 0) return null;
+    const out = document.createElement('canvas');
+    out.width = photo.width;
+    out.height = photo.height;
+    const ctx = out.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(photo.canvas, 0, 0);
+    if (this.compositor) {
+      this.compositor.render(this.tileFrame({ width: photo.width, height: photo.height, dpr: 1 }, { scale: 1, x: 0, y: 0 }), scenes);
+      ctx.drawImage(this.compositor.canvas, 0, 0);
+      // Back to the screen's size on the next frame.
+      this.view.requestDraw();
+    } else {
+      for (const surface of this.surfaces) {
+        if (surface.fit.confirmed) this.drawGrid(ctx, this.surfaceView(surface), { scale: 1, x: 0, y: 0 }, photo, photo.width, photo.height);
+      }
+    }
+    return out;
   }
 
   setTool(tool: PhotoTool): void {
@@ -459,7 +514,7 @@ export class PhotoMode {
   /** Selects the surface under a tap, or adds the wall or floor there. With the brush, paints a dot. */
   private tap(p: Pt): void {
     const photo = this.photo;
-    if (!photo) return;
+    if (!photo || this.comparing) return;
     const tiled = this.tiledSurface();
     if (tiled && this.tool !== 'pattern') {
       const t = this.view.view;
@@ -522,7 +577,7 @@ export class PhotoMode {
    */
   private dragStart(p: Pt, screen: PointerPoint): Drag | null {
     const surface = this.activeSurface();
-    if (!surface) return null;
+    if (!surface || this.comparing) return null;
     if (!surface.fit.confirmed) return this.startCornerDrag(screen);
     if (this.tool !== 'pattern') return this.startBrush(surface, screen);
     const outline = this.surfaceView(surface).outline;
@@ -698,7 +753,8 @@ export class PhotoMode {
 
   private renderTop(): void {
     const status = this.status;
-    this.top.hidden = !this.photo || status.state === 'idle';
+    // Before / after keeps the photo clear.
+    this.top.hidden = !this.photo || status.state === 'idle' || this.comparing;
     this.top.replaceChildren();
     if (status.state === 'downloading') {
       const share = status.total ? status.loaded / status.total : 0;
@@ -754,8 +810,16 @@ export class PhotoMode {
 
   private renderTools(): void {
     const tiled = this.tiledSurface();
-    this.tools.update(tiled ? { tool: this.tool, brushPx: this.brushPx } : null);
-    this.view.overlayCanvas.style.cursor = tiled ? (this.tool === 'pattern' ? 'grab' : 'crosshair') : '';
+    const anyTiled = this.surfaces.some((s) => s.fit.confirmed);
+    if (!anyTiled && this.comparing) {
+      this.comparing = false;
+      this.compare.show(false);
+      this.clipTiles();
+    }
+    // The fit card has the bottom of the stage while corners are placed.
+    const fitting = this.activeSurface()?.fit.confirmed === false;
+    this.tools.update(anyTiled && !fitting ? { tool: this.tool, brushPx: this.brushPx, editable: !!tiled, comparing: this.comparing } : null);
+    this.view.overlayCanvas.style.cursor = tiled && !this.comparing ? (this.tool === 'pattern' ? 'grab' : 'crosshair') : '';
   }
 
   private renderCard(): void {
@@ -778,7 +842,7 @@ export class PhotoMode {
 
   private drawOverlay(ctx: CanvasRenderingContext2D, t: PhotoTransform, frame: { width: number; height: number }): void {
     const photo = this.photo;
-    if (!photo) return;
+    if (!photo || this.comparing) return;
     const width = photo.width * t.scale;
     const height = photo.height * t.scale;
     const toScreen = (p: Pt) => ({ x: t.x + p.x * t.scale, y: t.y + p.y * t.scale });
@@ -931,32 +995,35 @@ export class PhotoMode {
   private renderTiles(): void {
     const compositor = this.compositor;
     if (!compositor) return;
-    const photo = this.photo;
     const t = this.view.view;
-    const frame = this.view.size;
+    compositor.render(this.tileFrame(this.view.size, t ?? { scale: 1, x: 0, y: 0 }), this.photo && t ? this.tileScenes() : []);
+    this.clipTiles();
+  }
+
+  /** The confirmed surfaces, ready for the GPU. */
+  private tileScenes(): SurfaceScene[] {
     const scenes: SurfaceScene[] = [];
-    if (photo && t) {
-      for (const surface of this.surfaces) {
-        if (!surface.fit.confirmed) continue;
-        const view = this.surfaceView(surface);
-        if (!view.toPhoto || !view.result || !view.mask || !view.shading) continue;
-        const { widthMm, heightMm } = surface.plan.surface;
-        scenes.push({ id: surface.id, result: view.result, toPhoto: view.toPhoto, inside: { x: widthMm / 2, y: heightMm / 2 }, mask: view.mask, shading: view.shading });
-      }
+    for (const surface of this.surfaces) {
+      if (!surface.fit.confirmed) continue;
+      const view = this.surfaceView(surface);
+      if (!view.toPhoto || !view.result || !view.mask || !view.shading) continue;
+      const { widthMm, heightMm } = surface.plan.surface;
+      scenes.push({ id: surface.id, result: view.result, toPhoto: view.toPhoto, inside: { x: widthMm / 2, y: heightMm / 2 }, mask: view.mask, shading: view.shading });
     }
-    compositor.render(
-      {
-        width: frame.width,
-        height: frame.height,
-        dpr: frame.dpr,
-        view: t ?? { scale: 1, x: 0, y: 0 },
-        photo: photo ?? { width: 1, height: 1 },
-        light: this.light,
-        groutMm: this.doc.settings.groutMm,
-        groutColor: this.doc.settings.groutColor,
-      },
-      scenes,
-    );
+    return scenes;
+  }
+
+  private tileFrame(frame: { width: number; height: number; dpr: number }, view: { scale: number; x: number; y: number }): TileFrame {
+    return {
+      width: frame.width,
+      height: frame.height,
+      dpr: frame.dpr,
+      view,
+      photo: this.photo ?? { width: 1, height: 1 },
+      light: this.light,
+      groutMm: this.doc.settings.groutMm,
+      groutColor: this.doc.settings.groutColor,
+    };
   }
 
   /** The tiles' edges in perspective, only where the surface's region is (fixtures stay clear). */

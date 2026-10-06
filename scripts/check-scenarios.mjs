@@ -70,6 +70,24 @@ const pointsInQuad = (page, quad) =>
   }, quad);
 const alphaAt = async (page, p) => (await page.evaluate(([x, y]) => window.ktDebug.tilePixel(x, y), [p.x, p.y]))[3];
 
+/** Width and height from a PNG's header. */
+const pngSize = (bytes) => ({ width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) });
+/** Opens the sample, tiles its wall, and returns once the tiles are drawn. */
+async function tileTheWall(page, device) {
+  await segmented(page, 'Old bathroom with subway tiles');
+  await tapLabel(page, device, 1);
+  await page.waitForFunction(() => window.ktDebug.surfaces().length >= 1, null, { timeout: 3000 });
+  await press(page, device, '.fit-card button:text-is("Done")');
+  await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+}
+/** Whether leaving the page would ask first (the beforeunload handler cancels the event). */
+const asksBeforeLeaving = (page) =>
+  page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+
 /** Opens a sheet tab (on the phone this also unfolds the sheet). One press is enough: a second would fold it. */
 async function openTab(page, device, name) {
   const body = page.locator(`.tab-${name.toLowerCase()}`);
@@ -638,6 +656,16 @@ export const scenarios = [
         assert(wall.quad?.length === 4, 'the tapped wall has four corners');
         await pause(150);
         await shot(`wall-${i + 1}`);
+        // The tiled result, then before / after.
+        await press(page, device, '.fit-card button:text-is("Done")');
+        await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+        await pause(150);
+        await shot(`tiled-${i + 1}`);
+        await press(page, device, '.photo-tools button:has-text("Before / after")');
+        await page.locator('.compare').waitFor({ state: 'visible', timeout: 2000 });
+        await pause(150);
+        await shot(`before-after-${i + 1}`);
+        await press(page, device, '.photo-tools button:has-text("Before / after")');
       }
     },
   },
@@ -750,6 +778,8 @@ export const scenarios = [
       await tapLabel(page, device, 1);
       await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.active, null, { timeout: 2000 });
       await openTab(page, device, 'Design');
+      // The panel follows on the next frame.
+      await page.locator('.tab-design .photo-context:has-text("Wall")').waitFor({ timeout: 2000 });
       const wallSeries = await page.locator('.tab-design .series-name').allTextContents();
       assert(wallSeries.length > 1 && !wallSeries.some((name) => /floor/i.test(name)), `wall series only (${wallSeries.join(', ')})`);
       await press(page, device, '.tab-design .series-choice:has-text("Demo Azure Medallion")');
@@ -911,6 +941,126 @@ export const scenarios = [
       assert(await page.locator('.tab-photo button:has-text("Clear brush changes")').isVisible(), 'brush changes can be cleared');
       await pause(150);
       await shot('grid');
+    },
+  },
+  {
+    // Before / after: the tiles only to the right of the line, which drags.
+    name: 'photo-compare',
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await tileTheWall(page, device);
+      await press(page, device, '.photo-tools button:has-text("Before / after")');
+      await page.locator('.compare').waitFor({ state: 'visible', timeout: 2000 });
+      assert(!(await page.locator('.photo-tools .tool-switch').isVisible()), 'the tools step aside while comparing');
+      // Drag the line to 30% of the stage.
+      const stage = await page.locator('.photo-stage').boundingBox();
+      const handle = await page.locator('.compare-handle').boundingBox();
+      const input = await pointer(page, device);
+      const from = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 };
+      await input.down(from);
+      await input.move({ x: stage.x + stage.width * 0.3, y: from.y }, 6);
+      await input.up();
+      await pause(100);
+      const clip = await page.evaluate(() => document.querySelector('.photo-tiles').style.clipPath);
+      assert(/^inset\(0(px)? 0(px)? 0(px)? 3\d(\.\d+)?%\)$/.test(clip), `the tiles show right of the line only (clip ${clip})`);
+      assert((await page.locator('.compare-handle').getAttribute('aria-valuenow')) === '30', 'the handle reports where it is');
+      await shot('dragged');
+      await press(page, device, '.photo-tools button:has-text("Before / after")');
+      await page.locator('.compare').waitFor({ state: 'hidden', timeout: 2000 });
+      assert((await page.evaluate(() => document.querySelector('.photo-tiles').style.clipPath)) === '', 'all the tiles again');
+    },
+  },
+  {
+    // Share in photo mode, where files can't be shared: the photo with its tiles downloads.
+    name: 'photo-share',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    init: () => {
+      Object.defineProperty(Navigator.prototype, 'share', { value: undefined, configurable: true });
+      Object.defineProperty(Navigator.prototype, 'canShare', { value: undefined, configurable: true });
+    },
+    async run(page, { device, saveDownload }) {
+      await tileTheWall(page, device);
+      assert(await asksBeforeLeaving(page), 'unshared photo work asks before leaving');
+      const [download] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), press(page, device, 'button[aria-label="Share"]')]);
+      assert(/^kt-photo-wall-\d{4}-\d{2}-\d{2}\.png$/.test(download.suggestedFilename()), `file name, got ${download.suggestedFilename()}`);
+      const saved = await saveDownload(download, 'picture');
+      const { readFile } = await import('node:fs/promises');
+      const size = pngSize(await readFile(saved.file));
+      assert(saved.isPng && size.width === 2048 && size.height > 1536, `the photo at its own size with the summary below it, got ${size.width} × ${size.height}`);
+      await page.locator('.toast:has-text("downloads")').waitFor({ state: 'visible', timeout: 3000 });
+      assert(!(await asksBeforeLeaving(page)), 'saved: leaving no longer asks');
+    },
+  },
+  {
+    // Share in photo mode with the Web Share API (as on Android): the picture goes to the share sheet.
+    name: 'photo-share-api',
+    devices: ['phone'],
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    init: () => {
+      Object.defineProperty(Navigator.prototype, 'canShare', { value: (data) => Array.isArray(data?.files) && data.files.length > 0, configurable: true });
+      Object.defineProperty(Navigator.prototype, 'share', {
+        value: async (data) => {
+          const file = data.files[0];
+          window.__shared = { name: file.name, type: file.type, size: file.size, title: data.title, text: data.text };
+        },
+        configurable: true,
+      });
+    },
+    async run(page, { device }) {
+      await tileTheWall(page, device);
+      await tapLabel(page, device, 2);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 2, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[1]?.confirmed, null, { timeout: 2000 });
+      await press(page, device, 'button[aria-label="Share"]');
+      await page.waitForFunction(() => window.__shared, null, { timeout: 15000 });
+      const shared = await page.evaluate(() => window.__shared);
+      assert(shared.type === 'image/png' && shared.size > 200000, `shares a PNG of the photo, got ${JSON.stringify(shared)}`);
+      assert(shared.title === 'Tiles on the photo · Wall: Demo Ivory Bloom · Floor: Demo Floor', `title names both surfaces, got ${shared.title}`);
+      assert(/^Tiles on the photo: \d+ tiles, \d+ boxes in all\.$/.test(shared.text), `text has the totals, got ${shared.text}`);
+      assert(!(await asksBeforeLeaving(page)), 'shared: leaving no longer asks');
+    },
+  },
+  {
+    // The photo never leaves the device: a whole session sends no request with a body, only GETs
+    // to the site itself, the model's files (Hugging Face) and the libraries (jsDelivr).
+    name: 'photo-network',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo',
+    init: () => {
+      Object.defineProperty(Navigator.prototype, 'share', { value: undefined, configurable: true });
+      Object.defineProperty(Navigator.prototype, 'canShare', { value: undefined, configurable: true });
+    },
+    async run(page, { device, requests }) {
+      // A photo of our own from the gallery, so nothing about it is on any server.
+      const jpeg = Buffer.from(
+        await page.evaluate(async () => {
+          const response = await fetch('samples/old-bathroom-subway-tiles.jpg');
+          const bitmap = await createImageBitmap(await response.blob());
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+          canvas.getContext('2d').drawImage(bitmap, 0, 0);
+          const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.9 });
+          return [...new Uint8Array(await blob.arrayBuffer())];
+        }),
+      );
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), press(page, device, '.photo-empty button:has-text("Choose from gallery")')]);
+      await chooser.setFiles({ name: 'my-bathroom.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+      await segmented(page, 'my-bathroom.jpg');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      await Promise.all([page.waitForEvent('download', { timeout: 15000 }), press(page, device, 'button[aria-label="Share"]')]);
+      const site = new URL(page.url()).host;
+      const allowed = new Set([site, 'huggingface.co', 'cdn.jsdelivr.net']);
+      const sent = requests.filter((r) => /^https?:/.test(r.url));
+      const hosts = {};
+      for (const r of sent) hosts[new URL(r.url).host] = (hosts[new URL(r.url).host] ?? 0) + 1;
+      console.log(`    requests: ${Object.entries(hosts).map(([host, n]) => `${host} × ${n}`).join(', ')}`);
+      const bad = sent.filter((r) => r.method !== 'GET' || r.body || !allowed.has(new URL(r.url).host));
+      assert(bad.length === 0, `only GETs without bodies to the site, the model and the libraries; also saw ${JSON.stringify(bad.slice(0, 3))}`);
+      assert(Object.keys(hosts).some((h) => h === 'huggingface.co'), 'the model files came from Hugging Face');
     },
   },
   {

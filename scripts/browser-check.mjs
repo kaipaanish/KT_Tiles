@@ -68,6 +68,9 @@ for (const scenario of scenarios) {
     const page = await context.newPage();
     const errors = [];
     const warnings = [];
+    // Every request the page (and its workers) makes, from the first one: scenarios can check what leaves the device.
+    const requests = [];
+    page.on('request', (request) => requests.push({ url: request.url(), method: request.method(), body: request.postData() }));
     page.on('console', (message) => {
       if (message.type() === 'error') errors.push(message.text());
       if (message.type() === 'warning') warnings.push(message.text());
@@ -96,7 +99,7 @@ for (const scenario of scenarios) {
       await page.waitForSelector('body[data-ready="true"]', { timeout: 15000 });
       // Informational only (headless timing says little about a phone): time to the first drawn frame.
       if (!scenario.path || scenario.path === './') console.log(`    first frame after ${Math.round(await page.evaluate(() => performance.now()))} ms`);
-      if (scenario.run) await scenario.run(page, { device, shot, saveDownload });
+      if (scenario.run) await scenario.run(page, { device, shot, saveDownload, requests });
       else await shot('');
     } catch (error) {
       errors.push(`Check failed: ${error.message.split('\n')[0]}`);

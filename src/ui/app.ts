@@ -23,7 +23,7 @@ import { designChoices } from './designPicker';
 import { h } from './dom';
 import { attachGestures, MAGNET_PX, type Drag, type PointerPoint } from './gestures';
 import { Popover } from './popover';
-import { sharePicture } from './share';
+import { photoShareContent, sharePhoto, sharePicture } from './share';
 import { Sheet } from './sheet';
 import { alignTab } from './tabs/align';
 import type { TabContext } from './tabs/context';
@@ -152,7 +152,20 @@ export function startApp(root: HTMLElement): void {
     const state = store.get();
     const look: Appearance = { groutMm: state.doc.settings.groutMm, groutColor: state.doc.settings.groutColor, ...state.ui.toggles };
     try {
-      const outcome = await sharePicture(state.doc, layoutFor(state.doc), catalog, textures, look);
+      let outcome;
+      if (state.ui.view === 'photo') {
+        // Photo mode shares the photo with its tiles, at the photo's own size.
+        const picture = photoMode.composite();
+        if (!picture) {
+          toast(stage, 'Tile a wall or the floor first, then share the photo.');
+          return;
+        }
+        outcome = await sharePhoto(picture, photoShareContent(photoMode.shareSurfaces(), catalog, state.doc.settings.allowancePct));
+        // Shared or saved: leaving the page no longer loses the work.
+        if (outcome !== 'cancelled') photoWorkKept = true;
+      } else {
+        outcome = await sharePicture(state.doc, layoutFor(state.doc), catalog, textures, look);
+      }
       if (outcome === 'downloaded') toast(stage, 'Picture saved to your downloads.');
     } catch (error) {
       console.warn('Sharing failed', error);

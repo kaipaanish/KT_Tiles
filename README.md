@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, and a brush corrects where tiles go. Still to come: the before/after slider and sharing.
+- Step 2 is complete in the browser; see the [checklist](#step-2-checklist). Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, a brush corrects where tiles go, a before/after line compares, and Share sends the photo with its tiles. Still to try on a real phone: the camera, WhatsApp, and timings.
 
 ## Using it
 
@@ -70,6 +70,10 @@ The tiles then appear on the surface in perspective, behind fixtures, keeping th
 - **Pattern**: drag on the tiles to move the pattern. The snapping, magnets and edge-cut labels are the designer's, and the centreline shows in perspective while you drag. On a phone, zoom in for fine moves.
 - **Add** and **Remove**: a brush for where tiles go. Paint over a tap or a mirror the wall finder took for wall, or over a gap it missed. Each stroke is one undo step. **Size** sets the brush, and zooming in makes it finer. **Clear brush changes** in the Photo tab removes them all.
 - **Show grid and centreline**, in the Photo tab, draws the tile grid and centreline in perspective over the tiles.
+
+**Before / after** in the same bar puts a line over the photo, with the room as it is on the left and the new tiles on the right. Drag the line, or use the arrow keys on its handle.
+
+**Share** (top bar) in photo mode sends the photo with its tiles at the photo's own size, with a summary strip below it listing each tiled surface's series, size, tiles and boxes. It shares or downloads as in the designer. Once shared or saved, leaving the page no longer asks first.
 
 Photos stay on the device. They are never uploaded and never saved, so closing the page loses them. While a photo has surfaces that haven't been shared, the browser asks before you leave the page.
 
@@ -424,6 +428,19 @@ Where the brief was ambiguous, these are the choices made.
     - The per-pixel loops (flood fill, feathering, box filter) no longer allocate per pixel, and they read memory in order.
     - In headless desktop Chrome, a tap that adds a surface went from about 480 ms to 120–150 ms. This should be checked again on a phone.
 
+**Compare and share**
+
+79. **Before / after is a line over the photo.**
+    - The tiles show only to its right, clipped with CSS, so moving the line draws nothing again.
+    - Outlines, colours and handles hide while comparing, and so does the hint at the top.
+    - The line's handle is also a keyboard slider.
+80. **Sharing in photo mode sends the photo with its tiles at the photo's own size** (up to 2048 px). The GPU draws the tiles again at that size for the picture.
+    - Below the photo is the designer's summary strip, scaled to the photo's width, with one section per tiled surface. The footer notes that it is a preview, so sizes should be checked on site.
+    - Shared or saved, leaving the page no longer asks first.
+    - With nothing tiled yet, Share explains what to do first.
+81. **No photo is uploaded, and a check proves it.** `photo-network` records every request in a whole session: a photo from the gallery, the wall finder, tiling a wall and sharing. It expects only GETs without bodies, to the site itself, Hugging Face (the model) and jsDelivr (the libraries). On the last run that was 5, 3 and 3 requests.
+82. **Touch drags on page controls cancel `touchstart`, as the canvas does** (decision 29). Otherwise Chrome takes the drag for its own gesture and swallows the next tap's click. After the before/after line had been dragged, its button wouldn't turn off. The browser check found this on the phone.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -440,3 +457,22 @@ What "done" means for step 1, and how each item is verified. "Browser check" is 
 | Share produces a PNG and works on an Android phone | PNG verified; **phone still to try** | Browser checks `share-download` (a real PNG file) and `share-api` (the PNG file reaches the Web Share API). Sharing to WhatsApp needs a real Android phone on the deployed HTTPS site. |
 | All engine tests pass | Done | `npm test`: 97 tests (engine and state) |
 | Dragging stays smooth on a mid-range Android phone | **Phone still to try** | Textures are built once and cached at several sizes, and frames are drawn only on change. Smoothness can't be judged in headless Chrome. |
+
+## Step 2 checklist
+
+What "done" means for step 2, and how each item is verified. Browser checks run on the phone (390 × 844, real touch events) and on desktop (1440 × 900), with the real wall finder on every photo in `public/samples/`. Timings come from headless desktop Chrome and say little about a phone.
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| "Take photo" opens the camera on an Android phone, on the deployed HTTPS site; gallery and sample photos work on a laptop | Gallery and samples verified; **camera still to try** | Browser checks `photo-exif` (a gallery photo, turned upright), `photo-samples` (every sample) and `photo-network` (a gallery photo through the whole flow). The camera is a file input with `capture="environment"`, which needs a real phone. |
+| Walls, floor and ceiling are labelled, and tapping a region switches to the matching Wall or Floor menus | Done | `photo-segment` on every sample (regions, legend, timings). In `photo-fit`, the Design tab offers wall series for a wall and floor series for the floor |
+| Corner handles and dimensions fit the surface; tiles appear in correct perspective; grout lines stay straight; medallion and sprig motifs stay continuous | Done | `photo-fit` (corner drag with the loupe, undo and redo, real size), `photo-rectangle` (a known rectangle), and `photo-tiles` with its grout close-up. The perspective-correct mapping has unit tests. The sprig runs on unbroken across tiles in the shared picture |
+| WC, basin and door stay in front of the tiles; the brush fixes mistakes | Done | `photo-tiles` reads GPU pixels: the tiles are opaque on the wall and transparent over the bathtub. `photo-edges` covers the guided filter at the basin and WC. In `photo-edit`, Remove hides tiles, undo brings them back, and Add tiles over a fixture |
+| The Room lighting slider visibly keeps shadows and light falloff | Done; the effect is modest on the sample | `photo-tiles`: from 0% to 100% the tiles' brightness changes by up to 50 levels out of 255, with screenshots at both. Unit tests cover falloff and fixtures outside the surface |
+| Dragging on the photo shifts the pattern with the same snapping and edge-cut labels as the designer | Done | `photo-edit`: a 150 mm drag snaps to a centred motif, as in the designer's own `pattern-drag`, with edge cuts and the centreline mid-drag. Both views use one action, which has unit tests |
+| A floor and a wall in the same photo can use different series | Done | `photo-fit` and `photo-share-api` ("Wall: Demo Ivory Bloom · Floor: Demo Floor"), plus action tests |
+| The before/after slider and Share PNG work | Done in the browser; **WhatsApp on a phone still to try** | `photo-compare` (drag and clip), `photo-share` (a 2048 px wide PNG with the summary) and `photo-share-api` (the file reaches the Web Share API) |
+| The network panel shows no photo upload, only the one-time model download | Done | `photo-network`: GETs only and no request bodies, to the site, huggingface.co and cdn.jsdelivr.net |
+| All tests pass, including step 1's | Done | `npm test`: 182 tests. Browser check: 60 pages, no console errors |
+
+The wall finder on the sample, in headless desktop Chrome: WebGPU fp16 about 3 s to load (the download already cached) and 3 s to run the first time; WASM about 2.3 s to run.

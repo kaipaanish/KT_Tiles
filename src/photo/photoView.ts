@@ -115,6 +115,17 @@ export class PhotoView {
     return this.photo ? this.fitted(this.photo).scale : 1;
   }
 
+  /** Zooms to `zoom` × the fitted size with a photo point in the middle of the free area. */
+  zoomTo(centre: Pt, zoom: number): void {
+    if (!this.photo) return;
+    const scale = this.fitted(this.photo).scale * zoom;
+    const midX = MARGIN.left + (this.frame.width - MARGIN.left - MARGIN.right) / 2;
+    const midY = MARGIN.top + (this.frame.height - MARGIN.top - MARGIN.bottom) / 2;
+    this.transform = { scale, x: midX - centre.x * scale, y: midY - centre.y * scale };
+    this.autoFit = false;
+    this.requestDraw();
+  }
+
   toPhoto(screen: Pt): Pt {
     const t = this.transform;
     return t ? { x: (screen.x - t.x) / t.scale, y: (screen.y - t.y) / t.scale } : screen;

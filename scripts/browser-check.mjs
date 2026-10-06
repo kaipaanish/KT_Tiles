@@ -6,6 +6,7 @@
 //   npm run check:browser -- [url] [--out checks/step-2] [--only name] [--browser msedge]
 //
 // Exits with code 1 if any page logs a console error or throws.
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
@@ -27,6 +28,33 @@ const devices = {
 };
 
 await mkdir(outDir, { recursive: true });
+
+// Photo mode downloads the segmentation model (Hugging Face) and its runtime (jsDelivr). Each
+// check page is a fresh browser context, so serve them from a cache on disk after the first
+// download instead of fetching ~10 MB per page. checks/ is git-ignored.
+const CACHE_DIR = path.join('checks', '.download-cache');
+await mkdir(CACHE_DIR, { recursive: true });
+const CACHED = /^https:\/\/(huggingface\.co|cdn\.jsdelivr\.net)\//;
+async function serveCached(route) {
+  const request = route.request();
+  if (request.method() !== 'GET') return route.continue();
+  const file = path.join(CACHE_DIR, createHash('sha256').update(request.url()).digest('hex'));
+  let body;
+  let contentType;
+  try {
+    body = await readFile(file);
+    contentType = (await readFile(`${file}.type`, 'utf8')) || 'application/octet-stream';
+  } catch {
+    const response = await fetch(request.url());
+    if (!response.ok) return route.continue();
+    body = Buffer.from(await response.arrayBuffer());
+    contentType = response.headers.get('content-type') ?? 'application/octet-stream';
+    await writeFile(file, body);
+    await writeFile(`${file}.type`, contentType);
+  }
+  await route.fulfill({ status: 200, body, headers: { 'content-type': contentType, 'access-control-allow-origin': '*' } });
+}
+
 const browser = await chromium.launch({ channel, headless: true });
 const report = [];
 let failures = 0;
@@ -36,6 +64,7 @@ for (const scenario of scenarios) {
   for (const [device, contextOptions] of Object.entries(devices)) {
     if (scenario.devices && !scenario.devices.includes(device)) continue;
     const context = await browser.newContext(contextOptions);
+    await context.route(CACHED, serveCached);
     const page = await context.newPage();
     const errors = [];
     const warnings = [];

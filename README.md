@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and zooms and pans it. Still to come: finding the walls and floor, laying tiles on them in perspective, editing on the photo, and sharing.
+- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, finds the walls and floor in it on the device, and selects the one you tap. Still to come: adjusting its corners, laying tiles on it in perspective, editing on the photo, and sharing.
 
 ## Using it
 
@@ -53,6 +53,11 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 - Pinch or scroll to zoom, drag to pan, and double-tap to fit. You can zoom out past the photo's edge.
 - The **Photo** tab shows the current photo, offers another one, and lists the sample photos with their credits.
 
+When a photo opens, the **wall finder** marks the walls (blue), floor (orange) and ceiling (grey) on it. It runs on the device; the first time, it downloads about 4 MB, which the browser then keeps.
+- Tap a wall or the floor to select it. Its four corners are fitted to it.
+- When one region covers two walls (a corner of the room, say), it doesn't get one forced quad. A starting rectangle is placed around the tap instead.
+- **Show regions** in the Photo tab hides or shows the colours.
+
 Photos stay on the device. They are never uploaded and never saved, so closing the page loses them.
 
 ## Run and test
@@ -76,6 +81,8 @@ npm run build && npx vite preview --port 4173     # leave running
 npm run check:browser -- --out checks/latest       # screenshots land in checks/ (git-ignored)
 ```
 
+Photo checks run the real wall finder, so the first run needs an internet connection. Its downloads (about 30 MB: the model, Transformers.js and the ONNX runtime) are kept in `checks/.download-cache` for later runs.
+
 The check uses `playwright-core`, which downloads no browsers: it drives the Chrome already installed on the machine (`--browser msedge` uses Edge instead). It is a development tool only. `npm run build` never runs it, so it has no effect on Vercel deployments.
 
 ### URL parameters
@@ -96,6 +103,9 @@ These open the app on a particular design, for demos and checks:
 | `tab` | `align` | Open the panel on a tab |
 | `view` | `photo` | Open in photo mode |
 | `sample` | `old-bathroom-subway-tiles.jpg` | With `view=photo`: open that photo from `public/samples/` |
+| `backend` | `webgpu` | Run the wall finder on the GPU where the browser supports WebGPU (the default is WASM) |
+| `edges` | `bilinear` | Turn off the photo-guided edges, for comparison |
+| `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 | `fresh` | `1` | Start from the default design instead of the autosaved one |
 
@@ -109,7 +119,8 @@ src/designs/   series.json (tiles, series, designs, presets) and texture painter
 src/render/    canvas renderer, texture cache, previews, the shared picture
 src/state/     the design document, pure edit actions, store with undo/redo, autosave
 src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs, share
-src/photo/     photo mode: getting the photo, the photo stage, and the perspective maths
+src/photo/     photo mode: getting the photo, the photo stage, regions, and the perspective maths
+src/segment/   the wall finder: model interface, worker, and cleaning up its output
 public/samples/  sample photos and their credits, listed automatically
 scripts/       browser check (development only)
 ```
@@ -168,6 +179,22 @@ A running `npm run dev` picks up added or removed photos on the next page reload
 
 The sample included now is [Old bathroom with subway tiles](https://commons.wikimedia.org/wiki/File:Old_bathroom_with_subway_tiles.JPG) by Alf van Beem, released into the public domain under CC0 1.0. The copy here is scaled down to 2048 × 1536.
 
+## The wall finder
+
+Photo mode finds walls, floors and ceilings with **SegFormer-B0** trained on ADE20K, a 150-class scene dataset ([Xenova/segformer-b0-finetuned-ade-512-512](https://huggingface.co/Xenova/segformer-b0-finetuned-ade-512-512), an ONNX export of [nvidia/segformer-b0-finetuned-ade-512-512](https://huggingface.co/nvidia/segformer-b0-finetuned-ade-512-512)). It runs in a Web Worker with [Transformers.js](https://huggingface.co/docs/transformers.js).
+
+**Licence: non-commercial only.** NVIDIA's SegFormer licence allows research and non-commercial use. That is fine for this prototype, but a commercial launch needs a different model. The model is kept behind two interfaces in `src/segment/segmenter.ts`, so replacing it touches one file:
+- `SurfaceModel`: load the model, then return wall, floor and ceiling probabilities for an image. A model trained on ADE20K labels only needs its id; others need `GROUP_NAMES` in `classes.ts` adjusted.
+- `Segmenter`: the whole job (a photo in, a label per pixel out), for a model that works differently.
+
+Everything after the probabilities (sharpening edges, removing specks, fitting corners) stays the same.
+
+**Network:** photos never leave the device. When the first photo is opened, the browser downloads:
+- Transformers.js 4.3.0 and the ONNX runtime's WASM file from jsDelivr
+- the model's files (4.4 MB, or 7.9 MB for WebGPU) from Hugging Face, pinned to one commit of the repository
+
+All of it is cached by the browser, so later photos and visits don't download it again.
+
 ## Deploying to Vercel
 
 1. Push the repo to GitHub.
@@ -178,6 +205,8 @@ The sample included now is [Old bathroom with subway tiles](https://commons.wiki
 The site is static, so it needs no environment variables, server or API keys. The build runs the type checks first, so a type error stops a bad deploy. The browser-check tool is never part of the build.
 
 Sharing files to WhatsApp needs HTTPS, which Vercel provides.
+
+No special headers are set. Cross-origin isolation (COOP/COEP) would let the wall finder use several CPU threads, but it changes how the model files may be fetched. It is left off until that is tested on the deployed site.
 
 ## Decisions
 
@@ -308,6 +337,27 @@ Where the brief was ambiguous, these are the choices made.
 49. **Two walls in one region aren't forced into one quad.**
     - The fit is scored as 1 − IoU (intersection over union) of the quad and the filled region, where 0 is a perfect fit. Above 15%, the app places a starter quad around the tap, as tall as the region there, with the hint "Drag the corners to this wall's edges".
     - Comparing the convex hull's area with the quad's, as first proposed, isn't enough. An L-shaped region (a tall wall beside a lower one) loses only about 14% of its hull to the best quad, so it would pass. Its 1 − IoU is above 15%, and the unit tests include that case.
+
+**The wall finder**
+
+50. **Transformers.js is loaded from jsDelivr (pinned to 4.3.0), not installed from npm.** The npm package also installs onnxruntime-node (301 MB) and sharp, which a static site never uses. onnxruntime-node also downloads CUDA libraries during `npm install` on Linux x64, which includes Vercel's build machines. Loading the browser build at run time keeps installs and builds unchanged. The ONNX runtime's WASM comes from jsDelivr in either case.
+51. **The model runs on WASM (8-bit, 4.4 MB) by default. WebGPU is opt-in** with `?backend=webgpu`, using fp16 where the GPU supports it and falling back to WASM. Measured on the sample photo at 512 × 512, in headless Chrome on a laptop with an Intel GPU (not a phone):
+
+    | | Download | First run | Later runs | Labels matching fp32 |
+    | --- | --- | --- | --- | --- |
+    | WASM 8-bit | 4.4 MB | 1.5 s | 1.0 s | 99.5% |
+    | WebGPU fp32 | 15.3 MB | 2.4 s | 0.8 s | 100% |
+    | WebGPU fp16 | 7.9 MB | 3.7 s | 0.5 s | 99.95% |
+
+    Each photo is segmented once, so the download and the first run matter most, and WebGPU's first run includes compiling its shaders. This should be measured again on a real phone, where WebGPU may do better.
+52. **The model sees the photo in its own shape**: about 640 px on the long side in multiples of 32 (640 × 480 for a 4:3 photo), rather than squashed into the 512 × 512 square it was trained on. It takes the same time and separates fixtures from the wall better: on the sample, the WC cistern and most of the towel are no longer labelled as wall.
+53. **Edges follow the photo (a guided filter).** The model labels cells of about 6 × 6 working pixels, and scaling its output up smoothly left visible bands of old wall around the basin and the WC in the sample (browser check `photo-edges`).
+    - Each class's probability is passed through a colour guided filter (He, Sun and Tang) with the photo as the guide. Where the probability changes, it is refitted as a linear function of the photo's colour in a small window, so the edge moves onto the photo's own edge. With it, the edges hug the basin's rim and the side of the WC.
+    - Settings: a 12 px window, eps 0.0004, with coefficients worked out at quarter size (the "fast" guided filter). On desktop, the clean-up takes about 0.3–0.4 s, against 2.5 s for the model.
+    - It can't recover objects the model missed entirely, e.g. tiles reflected in a mirror read as wall. The undoable brush (still to come) handles those.
+54. **Specks are absorbed by their surroundings.** Wall, floor or ceiling patches smaller than 0.2% of the photo take the label around them. So do "other" specks below 0.02%, a limit kept tiny so taps and soap dishes stay in front of the tiles.
+55. **What counts as a surface.** Wall, floor and ceiling are found by name in the model's labels, and a rug counts as floor because it is usually lifted for tiling. Everything else stays in front of the tiles: fixtures, mirrors, doors, furniture. Ceilings are shown, but tapping one explains that only walls and floors are tiled.
+56. **The wall finder runs as soon as a photo opens**, at a working size of 1024 px on the long side. A status at the top shows the download, then "Finding walls and floor…", then a legend. If it fails (offline, say), it says so and offers **Try again**.
 
 ## Step 1 checklist
 

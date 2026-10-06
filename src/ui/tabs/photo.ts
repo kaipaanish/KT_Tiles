@@ -1,9 +1,35 @@
+import type { PhotoMode } from '../../photo/photoMode';
 import { PHOTO_ICONS } from '../../photo/photoView';
+import { labelShares, styleFor } from '../../photo/regions';
 import { h, icon } from '../dom';
 import type { TabContext } from './context';
 import { section } from './parts';
 
-/** Photo mode's own tab: the photo, where to get another, and the sample photos' credits. */
+const percent = (share: number) => `${Math.round(share * 100)}%`;
+
+/** What the wall finder is doing, in one line. */
+function statusLine(mode: PhotoMode): string {
+  const status = mode.status;
+  switch (status.state) {
+    case 'idle':
+      return 'Walls and floor are found once you open a photo.';
+    case 'downloading':
+      return `Getting the wall finder ready (${(status.total / 1e6).toFixed(1)} MB, first time only)…`;
+    case 'running':
+      return 'Finding walls and floor…';
+    case 'failed':
+      return "Couldn't find the walls automatically. Check the connection and try again.";
+    case 'ready': {
+      const shares = labelShares(status.segmentation);
+      const found = (['wall', 'floor', 'ceiling'] as const).filter((name) => shares[name] > 0.005).map((name) => `${name} ${percent(shares[name])}`);
+      const { load, run, refine } = status.segmentation.timings;
+      const seconds = ((load + run + refine) / 1000).toFixed(1);
+      return `${found.length ? `Found ${found.join(', ')} of the photo` : 'No wall or floor found'}, in ${seconds} s on this device.`;
+    }
+  }
+}
+
+/** Photo mode's own tab: the photo, the walls and floor found in it, other photos and the samples' credits. */
 export function photoTab(ctx: TabContext): HTMLElement {
   const mode = ctx.photo;
   const photo = mode.photo;
@@ -18,6 +44,29 @@ export function photoTab(ctx: TabContext): HTMLElement {
       'Photos stay on this device. Nothing is uploaded or saved.',
     ),
   );
+
+  if (photo) {
+    const content = h('div', { class: 'photo-found' }, h('p', { class: 'photo-status' }, statusLine(mode)));
+    const selection = mode.selection;
+    const selected = selection && styleFor(selection.label);
+    if (selection && selected) {
+      content.append(h('p', { class: 'photo-status' }, h('strong', {}, `${selected.name} selected`), ` · ${percent(selection.share)} of the photo`));
+    }
+    if (mode.status.state === 'ready') {
+      content.append(
+        h(
+          'button',
+          { type: 'button', class: `option${mode.showRegions ? ' is-on' : ''}`, 'aria-pressed': String(mode.showRegions), onclick: () => mode.setShowRegions(!mode.showRegions) },
+          'Show regions',
+        ),
+      );
+      content.append(h('p', { class: 'sample-credit' }, mode.status.segmentation.model));
+    }
+    if (mode.status.state === 'failed') {
+      content.append(h('button', { type: 'button', class: 'pill-button', onclick: () => mode.retry() }, 'Try again'));
+    }
+    root.append(section('Walls and floor', content, 'The wall finder runs on this device. It is downloaded once (about 4 MB); your photo never leaves the device.'));
+  }
 
   root.append(
     section(

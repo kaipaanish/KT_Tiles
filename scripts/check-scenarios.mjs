@@ -30,6 +30,18 @@ async function expectState(page, check, message, show = (s) => s.doc[s.doc.activ
 const screenOf = (page, x, y) => page.evaluate(([px, py]) => window.ktDebug.screen(px, py), [x, y]);
 const viewScale = (page) => page.evaluate(() => window.ktDebug.view().scale);
 const fittedScale = (page) => page.evaluate(() => window.ktDebug.fittedScale());
+const pct = (share) => `${Math.round(share * 100)}%`;
+/** Waits for a photo to be open and its walls found (the first run downloads the model), and returns the result. */
+async function segmented(page, name) {
+  await page.waitForFunction(
+    (t) => window.ktDebug.photo()?.name === t && ['ready', 'failed'].includes(window.ktDebug.segmentation().state),
+    name,
+    { timeout: 180000 },
+  );
+  const result = await page.evaluate(() => window.ktDebug.segmentation());
+  assert(result.state === 'ready', `${name}: walls found (${result.message ?? result.state})`);
+  return result;
+}
 /** A photo pixel in page coordinates (photo mode). */
 const photoScreen = (page, x, y) => page.evaluate(([px, py]) => window.ktDebug.photoScreen(px, py), [x, y]);
 /** Centre of a placed piece, in page coordinates. */
@@ -544,6 +556,75 @@ export const scenarios = [
       await page.waitForFunction(() => window.ktDebug.photo()?.name === 'rotated.jpg', null, { timeout: 15000 });
       const photo = await page.evaluate(() => window.ktDebug.photo());
       assert(photo.width === 150 && photo.height === 300, `EXIF orientation applied: expected 150x300, got ${photo.width}x${photo.height}`);
+    },
+  },
+
+  // ---- Finding walls and floor: the real model on every sample photo, then tapping a wall
+  {
+    name: 'photo-segment',
+    path: './?debug=1&view=photo',
+    async run(page, { device, shot }) {
+      const titles = await page.locator('.photo-empty .sample-button').allTextContents();
+      for (const [i, title] of titles.entries()) {
+        if (i === 0) {
+          await press(page, device, `.photo-empty .sample-button:text-is("${title}")`);
+        } else {
+          if (!(await page.locator('.tab-photo').isVisible())) await press(page, device, '.sheet-tab:text-is("Photo")');
+          await press(page, device, `.tab-photo .sample-button:text-is("${title}")`);
+        }
+        const seg = await segmented(page, title);
+        console.log(`    ${title}: ${seg.model}; load ${seg.timings.load} ms, run ${seg.timings.run} ms, edges ${seg.timings.refine} ms (headless desktop Chrome, not a phone)`);
+        console.log(`    found wall ${pct(seg.shares.wall)}, floor ${pct(seg.shares.floor)}, ceiling ${pct(seg.shares.ceiling)}`);
+        assert(seg.shares.wall > 0.05, `${title}: some wall found`);
+        await pause(150);
+        await shot(`regions-${i + 1}`);
+        const point = await page.evaluate(() => window.ktDebug.labelPoint(1));
+        assert(point, 'a wall region to tap');
+        const input = await pointer(page, device);
+        await input.tap(await photoScreen(page, point.x, point.y));
+        await page.waitForFunction(() => window.ktDebug.selection()?.label === 1, null, { timeout: 3000 });
+        const selection = await page.evaluate(() => window.ktDebug.selection());
+        console.log(`    tapped wall: ${pct(selection.share)} of the photo, ${selection.starter ? 'starter quad (two walls?)' : 'fitted quad'}, 1 − IoU ${pct(selection.mismatch)}`);
+        assert(selection.quad?.length === 4, 'the tapped wall has four corners');
+        await pause(150);
+        await shot(`wall-${i + 1}`);
+      }
+    },
+  },
+  {
+    // ?backend=webgpu: WebGPU where the browser has it (fp16 if supported), WASM otherwise.
+    name: 'photo-webgpu',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&backend=webgpu&sample=old-bathroom-subway-tiles.jpg',
+    async run(page) {
+      const seg = await segmented(page, 'Old bathroom with subway tiles');
+      console.log(`    ${seg.model}; load ${seg.timings.load} ms, run ${seg.timings.run} ms, edges ${seg.timings.refine} ms (headless desktop Chrome)`);
+      console.log(`    found wall ${pct(seg.shares.wall)}, floor ${pct(seg.shares.floor)}`);
+      assert(Math.abs(seg.shares.wall - 0.64) < 0.03, 'about the same wall as the WASM model');
+    },
+  },
+  {
+    // Addition 3: do the edges follow the basin and WC? The same views with and without the guided filter.
+    name: 'photo-edges',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { shot }) {
+      const base = page.url();
+      for (const edges of ['guided', 'bilinear']) {
+        if (edges === 'bilinear') {
+          await page.goto(`${base}&edges=bilinear`);
+          await page.waitForSelector('body[data-ready="true"]');
+        }
+        await segmented(page, 'Old bathroom with subway tiles');
+        for (const [name, x, y] of [
+          ['basin', 1580, 930],
+          ['wc', 1880, 1250],
+        ]) {
+          await page.evaluate(([px, py]) => window.ktDebug.photoZoom(px, py, 3), [x, y]);
+          await pause(200);
+          await shot(`${name}-${edges}`);
+        }
+      }
     },
   },
 

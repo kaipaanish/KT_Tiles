@@ -15,6 +15,9 @@ import * as act from '../state/actions';
 import { activePlan, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
 import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, VIEW_KEY, writeStorage } from '../state/persist';
 import { PhotoMode } from '../photo/photoMode';
+import { largestRegion } from '../photo/maskToQuad';
+import { labelShares } from '../photo/regions';
+import { labelMask } from '../segment/postprocess';
 import { Store, type Mode, type Tab, type Toggles, type UiState, type View } from '../state/store';
 import { BandHandles } from './bandHandles';
 import { CanvasView } from './canvasView';
@@ -182,13 +185,23 @@ export function startApp(root: HTMLElement): void {
   });
   const warnings = new WarningStrip();
   designerLayer.append(bandHandles.el, h('div', { class: 'stage-top' }, modeSwitch.el), viewControls.el, warnings.el);
-  const photoMode = new PhotoMode(stage, {
-    changed: () => {
-      sheetTab = null;
-      render();
+  const photoMode = new PhotoMode(
+    stage,
+    {
+      changed: () => {
+        sheetTab = null;
+        render();
+      },
+      toast: (message) => toast(stage, message),
     },
-    toast: (message) => toast(stage, message),
-  });
+    {
+      // For checks and comparisons: ?segmenter=fake skips the model, ?backend=webgpu tries the GPU,
+      // ?edges=bilinear turns off the photo-guided edges.
+      segmenter: params.get('segmenter') === 'fake' ? 'fake' : 'model',
+      backend: params.get('backend') === 'webgpu' ? 'webgpu' : 'wasm',
+      edges: params.get('edges') === 'bilinear' ? 'bilinear' : 'guided',
+    },
+  );
 
   // ---- The Design / Tiles / Align / Count panel
   const sheet = new Sheet(
@@ -481,6 +494,47 @@ export function startApp(root: HTMLElement): void {
         const view = photoMode.view.view;
         return photo ? { id: photo.id, name: photo.name, width: photo.width, height: photo.height, view } : null;
       },
+      segmentation: () => {
+        const status = photoMode.status;
+        if (status.state !== 'ready') return { state: status.state, message: status.state === 'failed' ? status.message : undefined };
+        const { model, timings, width, height } = status.segmentation;
+        return { state: status.state, model, timings, width, height, shares: labelShares(status.segmentation) };
+      },
+      selection: () => {
+        const selection = photoMode.selection;
+        return selection ? { label: selection.label, share: selection.share, quad: selection.quad, starter: selection.starter, mismatch: selection.mismatch } : null;
+      },
+      /** A photo pixel well inside the biggest region with a label (1 wall, 2 floor), for checks to tap. */
+      labelPoint: (label: number) => {
+        const segmentation = photoMode.segmentation;
+        const photo = photoMode.photo;
+        if (!segmentation || !photo) return null;
+        const { width, height, labels } = segmentation;
+        const mask = { width, height, data: labelMask(labels, label) };
+        const region = largestRegion(mask);
+        if (!region) return null;
+        // Distance (in pixels, 4-connected) from each region pixel to the region's edge; take the deepest.
+        const depth = new Int32Array(width * height);
+        for (let i = 0; i < depth.length; i++) depth[i] = region.data[i] ? 1 << 20 : 0;
+        for (let pass = 0; pass < 2; pass++) {
+          for (let k = 0; k < depth.length; k++) {
+            const i = pass === 0 ? k : depth.length - 1 - k;
+            if (!depth[i]) continue;
+            const x = i % width;
+            const step = pass === 0 ? -1 : 1;
+            const nx = x + step;
+            const ny = i + step * width;
+            const fromX = nx >= 0 && nx < width ? depth[i + step]! : 0;
+            const fromY = ny >= 0 && ny < depth.length ? depth[ny]! : 0;
+            depth[i] = Math.min(depth[i]!, fromX + 1, fromY + 1);
+          }
+        }
+        let best = 0;
+        for (let i = 1; i < depth.length; i++) if (depth[i]! > depth[best]!) best = i;
+        return { x: ((best % width) + 0.5) * (photo.width / width), y: (Math.floor(best / width) + 0.5) * (photo.height / height), depth: depth[best] };
+      },
+      /** Zooms the photo to zoom × its fitted size around a photo pixel. */
+      photoZoom: (x: number, y: number, zoom: number) => photoMode.view.zoomTo({ x, y }, zoom),
       /** A photo pixel in page coordinates. */
       photoScreen: (x: number, y: number) => {
         const view = photoMode.view.view;

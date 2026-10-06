@@ -48,4 +48,6 @@ function samplePhotos(): Plugin {
 
 export default defineConfig({
   plugins: [samplePhotos()],
+  // The segmentation worker is created as a module worker, so it is built as one.
+  worker: { format: 'es' },
 });

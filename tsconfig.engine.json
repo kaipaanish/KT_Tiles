@@ -1,11 +1,21 @@
 {
-  // Type-checks the layout engine and the pure photo maths without the DOM library,
+  // Type-checks the layout engine, the pure photo maths and the segmentation clean-up without the DOM library,
   // so any use of document, window or canvas there fails the build.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022"],
     "types": []
   },
-  "include": ["src/engine", "src/photo/homography.ts", "src/photo/maskToQuad.ts", "src/photo/pointer.ts"],
+  "include": [
+    "src/engine",
+    "src/photo/homography.ts",
+    "src/photo/maskToQuad.ts",
+    "src/photo/pointer.ts",
+    "src/segment/segmenter.ts",
+    "src/segment/classes.ts",
+    "src/segment/postprocess.ts",
+    "src/segment/segformer.ts",
+    "src/segment/fakeSegmenter.ts"
+  ],
   "exclude": ["src/engine/**/*.test.ts", "src/engine/testkit.ts"]
 }

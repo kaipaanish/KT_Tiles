@@ -1,6 +1,6 @@
 import type { Tile, TileRole } from '../../engine';
 import * as act from '../../state/actions';
-import { activePlan } from '../../state/document';
+import { activeKind, activePlan } from '../../state/document';
 import { h, icon, ICONS } from '../dom';
 import { bandRangeLabel } from '../labels';
 import { tileThumb } from '../thumbs';
@@ -16,21 +16,21 @@ export function tilesTab(ctx: TabContext): HTMLElement {
   const { doc, ui } = state;
   const plan = activePlan(doc);
   const tileTarget = ui.mode === 'tile' && ui.selectedCell ? ui.selectedCell : null;
-  const bandTarget = !tileTarget && doc.active === 'wall' && ui.selectedBand !== null ? result.bands[ui.selectedBand] : undefined;
+  const bandTarget = !tileTarget && activeKind(doc) === 'wall' && ui.selectedBand !== null ? result.bands[ui.selectedBand] : undefined;
 
   let hint: string;
   if (tileTarget) hint = 'Tap a tile to put it in the selected spot on the wall.';
   else if (bandTarget) hint = `Tap a tile to use it for the band ${bandRangeLabel(bandTarget, catalog)}.`;
-  else if (doc.active === 'wall') hint = 'Select a band (Row mode) or a tile (Tile mode), then tap a tile here.';
+  else if (activeKind(doc) === 'wall') hint = 'Select a band (Row mode) or a tile (Tile mode), then tap a tile here.';
   else hint = 'Select a tile in Tile mode, then tap a tile here to replace it.';
 
   const assign = (tile: Tile) => {
     const now = store.get();
     const cell = now.ui.mode === 'tile' ? now.ui.selectedCell : null;
-    const band = now.doc.active === 'wall' ? now.ui.selectedBand : null;
+    const band = activeKind(now.doc) === 'wall' ? now.ui.selectedBand : null;
     if (cell) store.commit((d) => act.assignTile(d, cell, tile.id, catalog));
     else if (band !== null) store.commit((d) => act.setBandTile(d, band, tile.id, catalog));
-    else ctx.toast(doc.active === 'wall' ? 'Select a band in Row mode, or a tile in Tile mode, first.' : 'Select a tile in Tile mode first.');
+    else ctx.toast(activeKind(doc) === 'wall' ? 'Select a band in Row mode, or a tile in Tile mode, first.' : 'Select a tile in Tile mode first.');
   };
 
   const root = h('div', { class: 'tab tab-tiles' }, h('p', { class: `tab-hint${tileTarget || bandTarget ? ' is-ready' : ''}` }, hint));

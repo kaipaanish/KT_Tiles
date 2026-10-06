@@ -93,6 +93,49 @@ button:disabled {
   gap: 2px;
 }
 
+.topbar-break {
+  display: none;
+}
+
+/* Phones: Designer | Photo and the actions on the first row; the surface and its size on a second. */
+@media (max-width: 560px) {
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding-top: calc(env(safe-area-inset-top) + 8px);
+    padding-bottom: 8px;
+  }
+
+  .topbar .view-toggle {
+    order: 1;
+  }
+
+  .topbar-actions {
+    order: 2;
+  }
+
+  .topbar-break {
+    display: block;
+    order: 3;
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  .topbar.is-photo .topbar-break {
+    display: none;
+  }
+
+  .topbar .surface-toggle {
+    order: 4;
+  }
+
+  .topbar .size-chip {
+    order: 5;
+  }
+}
+
 .segmented {
   display: inline-flex;
   padding: 3px;

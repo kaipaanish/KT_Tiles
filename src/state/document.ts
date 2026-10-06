@@ -13,6 +13,7 @@ import {
   type XMode,
   type YMode,
 } from '../engine';
+import type { Pt, Quad } from '../photo/homography';
 
 export type WallLayout = Extract<Layout, { surface: 'wall' }>;
 export type FloorLayout = Extract<Layout, { surface: 'floor' }>;
@@ -34,12 +35,43 @@ export interface Settings {
   suggestPriority: SuggestPriority;
 }
 
-/** The saved, undoable design: one wall, one floor, and which one is showing. */
+export type PhotoSurfaceId = `photo-${number}`;
+/** Which plan the panels edit: the designer's wall or floor, or a surface picked in the photo. */
+export type SurfaceRef = SurfaceType | PhotoSurfaceId;
+
+/** How a photo surface sits in the photo. */
+export interface PhotoFit {
+  /** Corners in photo pixels, in surface order: bottom-left, bottom-right, top-right, top-left. */
+  quad: Quad;
+  /** What the corners mark: the surface's own edges, or a rectangle of known size on it. */
+  marks: 'surface' | 'rectangle';
+  /** With 'rectangle': where the rectangle sits (from the surface's bottom-left) and its size, in mm. */
+  rect: { x: number; y: number; w: number; h: number };
+  /** False until the user confirms the corners and the size; tiles show from then on. */
+  confirmed: boolean;
+  /** The corners started as a rough rectangle around the tap, because the region wasn't one quadrilateral. */
+  starter: boolean;
+}
+
+/** A wall or floor picked in the photo, with a design of its own. */
+export interface PhotoSurface<L extends Layout = Layout> {
+  id: PhotoSurfaceId;
+  /** The photo it belongs to. Photos are kept in memory only, so photo surfaces are never saved. */
+  photoId: string;
+  /** Where the user tapped, in photo pixels: the segmentation region there is the surface's area. */
+  seed: Pt;
+  plan: SurfacePlan<L>;
+  fit: PhotoFit;
+}
+
+/** The undoable design: the designer's wall and floor, surfaces picked in a photo, and which one is being edited. */
 export interface DesignDoc {
   version: 1;
-  active: SurfaceType;
+  active: SurfaceRef;
   wall: SurfacePlan<WallLayout>;
   floor: SurfacePlan<FloorLayout>;
+  /** Surfaces picked in the current photo. Autosave leaves them out. */
+  photo: PhotoSurface[];
   settings: Settings;
 }
 
@@ -53,8 +85,44 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const DEFAULT_PRESET = 'highlighter-band';
 
+export const isPhotoRef = (ref: SurfaceRef): ref is PhotoSurfaceId => ref.startsWith('photo-');
+
+export function photoSurface(doc: DesignDoc, ref: SurfaceRef): PhotoSurface | undefined {
+  return isPhotoRef(ref) ? doc.photo.find((surface) => surface.id === ref) : undefined;
+}
+
+/** The plan the panels edit. A photo surface that has gone falls back to the designer's wall. */
 export function activePlan(doc: DesignDoc): SurfacePlan {
-  return doc.active === 'wall' ? doc.wall : doc.floor;
+  if (doc.active === 'wall') return doc.wall;
+  if (doc.active === 'floor') return doc.floor;
+  return photoSurface(doc, doc.active)?.plan ?? doc.wall;
+}
+
+/** Whether the plan being edited is a wall or a floor. */
+export function activeKind(doc: DesignDoc): SurfaceType {
+  return activePlan(doc).layout.surface;
+}
+
+/** The plan being edited if it is a wall (the designer's or one in the photo). */
+export function activeWall(doc: DesignDoc): SurfacePlan<WallLayout> | null {
+  const plan = activePlan(doc);
+  return plan.layout.surface === 'wall' ? (plan as SurfacePlan<WallLayout>) : null;
+}
+
+/** The plan being edited if it is a floor. */
+export function activeFloor(doc: DesignDoc): SurfacePlan<FloorLayout> | null {
+  const plan = activePlan(doc);
+  return plan.layout.surface === 'floor' ? (plan as SurfacePlan<FloorLayout>) : null;
+}
+
+/** "Wall 2", "Floor": photo surfaces are numbered by kind when there is more than one. */
+export function photoSurfaceName(doc: DesignDoc, id: PhotoSurfaceId): string {
+  const surface = photoSurface(doc, id);
+  if (!surface) return '';
+  const kind = surface.plan.layout.surface;
+  const same = doc.photo.filter((s) => s.plan.layout.surface === kind);
+  const name = kind === 'wall' ? 'Wall' : 'Floor';
+  return same.length > 1 ? `${name} ${same.indexOf(surface) + 1}` : name;
 }
 
 /** Bands for a wall series from a preset, falling back to the first preset that fits. */
@@ -105,6 +173,7 @@ export function createDefaultDocument(catalog: Catalog): DesignDoc {
     active: 'wall',
     wall: { ...wall, alignment: topSuggestion(wall, catalog) },
     floor: { ...floor, alignment: topSuggestion(floor, catalog) },
+    photo: [],
     settings: { ...DEFAULT_SETTINGS },
   };
 }

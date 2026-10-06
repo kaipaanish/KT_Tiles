@@ -20,7 +20,25 @@ import {
   type Surface,
   type SurfaceType,
 } from '../engine';
-import { activePlan, wallBandsFor, type DesignDoc, type FloorLayout, type Settings, type SurfacePlan, type WallLayout } from './document';
+import type { Pt, Quad } from '../photo/homography';
+import {
+  activeFloor,
+  activeKind,
+  activePlan,
+  activeWall,
+  isPhotoRef,
+  photoSurface,
+  wallBandsFor,
+  type DesignDoc,
+  type FloorLayout,
+  type PhotoFit,
+  type PhotoSurface,
+  type PhotoSurfaceId,
+  type Settings,
+  type SurfacePlan,
+  type SurfaceRef,
+  type WallLayout,
+} from './document';
 
 /** Pure edits to the design document. Each returns a new document, or the same one when nothing changes. */
 
@@ -35,21 +53,24 @@ const MAX_BAND_ROWS = 60;
 
 const mod = (a: number, n: number) => ((a % n) + n) % n;
 
-type PlanPatch = Partial<Pick<SurfacePlan, 'surface' | 'alignment' | 'overrides'>>;
-
-function patchActive(doc: DesignDoc, patch: PlanPatch): DesignDoc {
-  return doc.active === 'wall' ? { ...doc, wall: { ...doc.wall, ...patch } } : { ...doc, floor: { ...doc.floor, ...patch } };
+/** Changes the plan being edited, wherever it lives: the designer's wall or floor, or a photo surface. */
+function patchActive(doc: DesignDoc, patch: Partial<SurfacePlan>): DesignDoc {
+  const photo = photoSurface(doc, doc.active);
+  if (photo) return { ...doc, photo: doc.photo.map((s) => (s === photo ? ({ ...s, plan: { ...s.plan, ...patch } } as PhotoSurface) : s)) };
+  // A photo surface that has gone falls back to the designer's wall, as in activePlan.
+  if (doc.active === 'floor') return { ...doc, floor: { ...doc.floor, ...patch } as SurfacePlan<FloorLayout> };
+  return { ...doc, wall: { ...doc.wall, ...patch } as SurfacePlan<WallLayout> };
 }
 
 function patchWall(doc: DesignDoc, patch: Partial<SurfacePlan<WallLayout>>): DesignDoc {
-  return { ...doc, wall: { ...doc.wall, ...patch } };
+  return activeWall(doc) ? patchActive(doc, patch) : doc;
 }
 
 function patchFloor(doc: DesignDoc, patch: Partial<SurfacePlan<FloorLayout>>): DesignDoc {
-  return { ...doc, floor: { ...doc.floor, ...patch } };
+  return activeFloor(doc) ? patchActive(doc, patch) : doc;
 }
 
-export function setActive(doc: DesignDoc, surface: SurfaceType): DesignDoc {
+export function setActive(doc: DesignDoc, surface: SurfaceRef): DesignDoc {
   return doc.active === surface ? doc : { ...doc, active: surface };
 }
 
@@ -61,7 +82,7 @@ export function setSurfaceSize(doc: DesignDoc, patch: Partial<Surface>): DesignD
   const widthMm = patch.widthMm === undefined ? old.widthMm : clampSize(patch.widthMm);
   const heightMm = patch.heightMm === undefined ? old.heightMm : clampSize(patch.heightMm);
   let surface: Surface = { widthMm, heightMm };
-  if (doc.active === 'wall') {
+  if (activeKind(doc) === 'wall') {
     const oldTiled = old.tiledHeightMm ?? old.heightMm;
     const tiled = patch.tiledHeightMm === undefined ? (oldTiled >= old.heightMm ? heightMm : oldTiled) : clampSize(patch.tiledHeightMm);
     surface = { widthMm, heightMm, tiledHeightMm: Math.min(tiled, heightMm) };
@@ -84,20 +105,33 @@ export function setSettings(doc: DesignDoc, patch: Partial<Settings>): DesignDoc
   return JSON.stringify(settings) === JSON.stringify(doc.settings) ? doc : { ...doc, settings };
 }
 
+/**
+ * Makes the designer's wall or floor the one being edited, for a series or preset of that kind.
+ * A photo surface keeps its kind (null): it is a wall or a floor in the photo.
+ */
+function editKind(doc: DesignDoc, kind: SurfaceType): DesignDoc | null {
+  if (activeKind(doc) === kind) return doc;
+  return photoSurface(doc, doc.active) ? null : setActive(doc, kind);
+}
+
 /** Switches series. Walls keep their bands, role for role, when the new series has the same roles. */
 export function setSeries(doc: DesignDoc, seriesId: string, catalog: Catalog): DesignDoc {
   const series = catalog.series(seriesId);
-  if (series.surface === 'floor') {
-    if (doc.floor.layout.seriesId === seriesId) return setActive(doc, 'floor');
-    const current = catalog.design(doc.floor.layout.designId);
+  const next = editKind(doc, series.surface);
+  if (!next) return doc;
+  const floor = activeFloor(next);
+  if (floor) {
+    if (floor.layout.seriesId === seriesId) return next;
+    const current = catalog.design(floor.layout.designId);
     const designs = catalog.designsOf(seriesId);
     const design = designs.find((d) => d.name === current.name) ?? designs[0];
     if (!design) return doc;
-    return { ...doc, active: 'floor', floor: { ...doc.floor, layout: { surface: 'floor', seriesId, designId: design.id }, overrides: {} } };
+    return patchFloor(next, { layout: { surface: 'floor', seriesId, designId: design.id }, overrides: {} });
   }
-  if (doc.wall.layout.seriesId === seriesId) return setActive(doc, 'wall');
-  const bands = bandsByRole(doc.wall.layout.bands, seriesId, catalog) ?? wallBandsFor(seriesId, catalog);
-  return { ...doc, active: 'wall', wall: { ...doc.wall, layout: { surface: 'wall', seriesId, bands }, overrides: {} } };
+  const wall = activeWall(next);
+  if (!wall || wall.layout.seriesId === seriesId) return next;
+  const bands = bandsByRole(wall.layout.bands, seriesId, catalog) ?? wallBandsFor(seriesId, catalog);
+  return patchWall(next, { layout: { surface: 'wall', seriesId, bands }, overrides: {} });
 }
 
 function bandsByRole(bands: readonly Band[], seriesId: string, catalog: Catalog): Band[] | null {
@@ -115,22 +149,29 @@ function bandsByRole(bands: readonly Band[], seriesId: string, catalog: Catalog)
 }
 
 export function applyPreset(doc: DesignDoc, presetId: string, catalog: Catalog): DesignDoc {
-  const bands = wallBandsFor(doc.wall.layout.seriesId, catalog, presetId);
-  return { ...doc, active: 'wall', wall: { ...doc.wall, layout: { ...doc.wall.layout, bands }, overrides: {} } };
+  const next = editKind(doc, 'wall');
+  const wall = next && activeWall(next);
+  if (!next || !wall) return doc;
+  const bands = wallBandsFor(wall.layout.seriesId, catalog, presetId);
+  return patchWall(next, { layout: { ...wall.layout, bands }, overrides: {} });
 }
 
 export function setFloorDesign(doc: DesignDoc, designId: string, catalog: Catalog): DesignDoc {
+  const floor = activeFloor(doc);
+  if (!floor) return doc;
   const design = catalog.design(designId);
-  if (design.seriesId !== doc.floor.layout.seriesId) throw new LayoutError([`"${design.name}" belongs to another series.`]);
-  if (doc.floor.layout.designId === designId) return doc;
-  return patchFloor(doc, { layout: { ...doc.floor.layout, designId }, overrides: {} });
+  if (design.seriesId !== floor.layout.seriesId) throw new LayoutError([`"${design.name}" belongs to another series.`]);
+  if (floor.layout.designId === designId) return doc;
+  return patchFloor(doc, { layout: { ...floor.layout, designId }, overrides: {} });
 }
 
 // Bands -------------------------------------------------------------------------------------
 
-/** Where the wall's bands sit right now. */
+/** Where the bands of the wall being edited sit right now. */
 export function wallBandPlan(doc: DesignDoc, catalog: Catalog): BandPlan {
-  const plan = resolveAlignment(doc.wall.surface, doc.wall.layout, doc.wall.alignment, catalog).bandPlan;
+  const wall = activeWall(doc);
+  if (!wall) throw new Error('The surface being edited is not a wall');
+  const plan = resolveAlignment(wall.surface, wall.layout, wall.alignment, catalog).bandPlan;
   if (!plan) throw new Error('A wall always has a band plan');
   return plan;
 }
@@ -145,13 +186,15 @@ function fixedRows(rowsNow: number, unitRows: number): number {
  * index to its new index (or null when the band's tiles are gone or its design changed).
  */
 function withBands(doc: DesignDoc, bands: Band[], catalog: Catalog, bandFor: (oldIndex: number) => number | null): DesignDoc {
-  const problems = validateBands(bands, doc.wall.layout.seriesId, catalog);
+  const wall = activeWall(doc);
+  if (!wall) return doc;
+  const problems = validateBands(bands, wall.layout.seriesId, catalog);
   if (problems.length > 0) throw new LayoutError(problems);
   const before = wallBandPlan(doc, catalog);
-  const next = patchWall(doc, { layout: { ...doc.wall.layout, bands } });
+  const next = patchWall(doc, { layout: { ...wall.layout, bands } });
   const after = wallBandPlan(next, catalog);
   const overrides: Record<string, CellOverride> = {};
-  for (const [key, value] of Object.entries(doc.wall.overrides)) {
+  for (const [key, value] of Object.entries(wall.overrides)) {
     const cell = parseCellKey(key);
     const old = cell && before.bands.find((b) => cell.row >= b.rowStart && cell.row < b.rowStart + b.rowCount);
     if (!cell || !old) continue;
@@ -165,7 +208,8 @@ function withBands(doc: DesignDoc, bands: Band[], catalog: Catalog, bandFor: (ol
 
 /** Adds or removes one repeat unit's worth of rows. */
 export function stepBandRows(doc: DesignDoc, index: number, direction: 1 | -1, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
+  const bands = activeWall(doc)?.layout.bands;
+  if (!bands) return doc;
   const band = bands[index];
   if (!band || band.rows === 'fill') return doc;
   const unit = catalog.design(band.designId).rows;
@@ -176,7 +220,8 @@ export function stepBandRows(doc: DesignDoc, index: number, direction: 1 | -1, c
 
 /** Only the top band can fill the remaining height. Turning fill off keeps the rows it shows now. */
 export function setBandFill(doc: DesignDoc, index: number, fill: boolean, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
+  const bands = activeWall(doc)?.layout.bands;
+  if (!bands) return doc;
   const band = bands[index];
   if (!band || index !== bands.length - 1 || (band.rows === 'fill') === fill) return doc;
   const unit = catalog.design(band.designId).rows;
@@ -186,7 +231,8 @@ export function setBandFill(doc: DesignDoc, index: number, fill: boolean, catalo
 
 /** Moves a band to a new position. "Fill" stays with the top position. */
 export function moveBand(doc: DesignDoc, from: number, to: number, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
+  const bands = activeWall(doc)?.layout.bands;
+  if (!bands) return doc;
   if (from === to || !bands[from] || to < 0 || to >= bands.length) return doc;
   const plan = wallBandPlan(doc, catalog);
   const hadFill = bands.some((b) => b.rows === 'fill');
@@ -204,7 +250,8 @@ export function moveBand(doc: DesignDoc, from: number, to: number, catalog: Cata
 
 /** Changes a band's design, keeping its number of repeat units. */
 export function setBandDesign(doc: DesignDoc, index: number, designId: string, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
+  const bands = activeWall(doc)?.layout.bands;
+  if (!bands) return doc;
   const band = bands[index];
   if (!band || band.designId === designId) return doc;
   const old = catalog.design(band.designId);
@@ -221,8 +268,10 @@ export function setBandTile(doc: DesignDoc, index: number, tileId: string, catal
 
 /** Adds a one-unit Light band just below the top band. */
 export function addBand(doc: DesignDoc, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
-  const seriesId = doc.wall.layout.seriesId;
+  const wall = activeWall(doc);
+  if (!wall) return doc;
+  const bands = wall.layout.bands;
+  const seriesId = wall.layout.seriesId;
   const design = designForRole(seriesId, 'light', catalog) ?? catalog.designsOf(seriesId)[0];
   if (!design) return doc;
   const at = Math.max(0, bands.length - 1);
@@ -231,7 +280,8 @@ export function addBand(doc: DesignDoc, catalog: Catalog): DesignDoc {
 }
 
 export function removeBand(doc: DesignDoc, index: number, catalog: Catalog): DesignDoc {
-  const bands = doc.wall.layout.bands;
+  const bands = activeWall(doc)?.layout.bands;
+  if (!bands) return doc;
   if (bands.length <= 1 || !bands[index]) return doc;
   const next = bands.filter((_, i) => i !== index);
   const top = next[next.length - 1];
@@ -313,4 +363,90 @@ export function assignTile(doc: DesignDoc, cell: Cell, tileId: string, catalog: 
 
 export function resetTiles(doc: DesignDoc): DesignDoc {
   return Object.keys(activePlan(doc).overrides).length === 0 ? doc : patchActive(doc, { overrides: {} });
+}
+
+// Photo surfaces ----------------------------------------------------------------------------
+
+export interface NewPhotoSurface {
+  photoId: string;
+  kind: SurfaceType;
+  /** Where the user tapped, in photo pixels. */
+  seed: Pt;
+  /** Starting corners, in photo pixels. */
+  quad: Quad;
+  starter: boolean;
+}
+
+/**
+ * Adds a wall or floor picked in the photo and makes it the one being edited. It starts with the
+ * designer's design for that kind of surface (without single-tile changes) and the designer's
+ * size, which the user then confirms.
+ */
+export function addPhotoSurface(doc: DesignDoc, input: NewPhotoSurface): DesignDoc {
+  const base: SurfacePlan = input.kind === 'wall' ? doc.wall : doc.floor;
+  const number = Math.max(0, ...doc.photo.map((s) => Number(s.id.slice('photo-'.length)) || 0)) + 1;
+  const id: PhotoSurfaceId = `photo-${number}`;
+  const plan = structuredClone({ ...base, overrides: {} });
+  const fit: PhotoFit = {
+    quad: input.quad,
+    marks: 'surface',
+    rect: { x: 0, y: 0, w: plan.surface.widthMm, h: plan.surface.heightMm },
+    confirmed: false,
+    starter: input.starter,
+  };
+  return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit }] };
+}
+
+export function setPhotoFit(doc: DesignDoc, id: PhotoSurfaceId, patch: Partial<PhotoFit>): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface) return doc;
+  const fit = { ...surface.fit, ...patch };
+  if (JSON.stringify(fit) === JSON.stringify(surface.fit)) return doc;
+  return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, fit } : s)) };
+}
+
+/** Moves one corner (0 bottom-left, 1 bottom-right, 2 top-right, 3 top-left) to a photo pixel. */
+export function movePhotoCorner(doc: DesignDoc, id: PhotoSurfaceId, corner: number, to: Pt): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface || corner < 0 || corner > 3) return doc;
+  const quad = surface.fit.quad.map((p, i) => (i === corner ? { x: to.x, y: to.y } : p)) as Quad;
+  return setPhotoFit(doc, id, { quad });
+}
+
+/**
+ * The corners mark a rectangle of known size (w × h mm) on the surface. The surface's own size
+ * comes from the photo: `extent` is its region measured in the rectangle's frame (mm, y up), so
+ * the surface starts at the region's bottom-left and the rectangle sits inside it.
+ */
+export function fitToRectangle(
+  doc: DesignDoc,
+  id: PhotoSurfaceId,
+  size: { w: number; h: number },
+  extent: { minX: number; minY: number; maxX: number; maxY: number },
+): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface) return doc;
+  const round10 = (mm: number) => clampSize(Math.round(mm / 10) * 10);
+  const widthMm = round10(extent.maxX - extent.minX);
+  const heightMm = round10(extent.maxY - extent.minY);
+  const wall = surface.plan.layout.surface === 'wall';
+  const plan = { ...surface.plan, surface: wall ? { widthMm, heightMm, tiledHeightMm: heightMm } : { widthMm, heightMm } };
+  const fit: PhotoFit = { ...surface.fit, marks: 'rectangle', rect: { x: -extent.minX, y: -extent.minY, w: size.w, h: size.h } };
+  return { ...doc, photo: doc.photo.map((s) => (s === surface ? ({ ...s, plan, fit } as PhotoSurface) : s)) };
+}
+
+export function removePhotoSurface(doc: DesignDoc, id: PhotoSurfaceId): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface) return doc;
+  const photo = doc.photo.filter((s) => s !== surface);
+  // Editing moves to the designer's surface of the same kind.
+  return { ...doc, photo, active: doc.active === id ? surface.plan.layout.surface : doc.active };
+}
+
+/** Keeps only the surfaces of one photo, e.g. when another photo is opened. */
+export function keepPhotoSurfaces(doc: DesignDoc, photoId: string | null): DesignDoc {
+  const photo = doc.photo.filter((s) => s.photoId === photoId);
+  if (photo.length === doc.photo.length) return doc;
+  const activeGone = isPhotoRef(doc.active) && !photo.some((s) => s.id === doc.active);
+  return { ...doc, photo, active: activeGone ? activeKind(doc) : doc.active };
 }

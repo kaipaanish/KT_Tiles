@@ -1,6 +1,6 @@
 import { formatMm, type SurfaceType } from '../engine';
 import { MAX_SIZE_MM, MIN_SIZE_MM } from '../state/actions';
-import { activePlan } from '../state/document';
+import { activeKind, activePlan, isPhotoRef, photoSurfaceName } from '../state/document';
 import type { AppState, View } from '../state/store';
 import { h, icon, ICONS } from './dom';
 import { Popover } from './popover';
@@ -51,6 +51,8 @@ export class TopBar {
       h('div', { class: 'segmented view-toggle', role: 'group', 'aria-label': 'Mode' }, this.designer, this.photo),
       (this.surfaceToggle = h('div', { class: 'segmented surface-toggle', role: 'group', 'aria-label': 'Surface' }, this.wall, this.floor)),
       this.size,
+      // On phones the bar wraps here: the surface and its size get a row of their own.
+      h('span', { class: 'topbar-break', 'aria-hidden': 'true' }),
       h('div', { class: 'topbar-actions' }, this.undo, this.redo, share),
     );
   }
@@ -66,14 +68,18 @@ export class TopBar {
     this.photo.setAttribute('aria-pressed', String(photoView));
     // Photo surfaces bring their own kind and size (they arrive in a later step).
     this.surfaceToggle.hidden = photoView;
+    this.el.classList.toggle('is-photo', photoView);
     this.size.hidden = photoView;
-    this.wall.classList.toggle('is-on', doc.active === 'wall');
-    this.floor.classList.toggle('is-on', doc.active === 'floor');
-    this.wall.setAttribute('aria-pressed', String(doc.active === 'wall'));
-    this.floor.setAttribute('aria-pressed', String(doc.active === 'floor'));
+    const kind = activeKind(doc);
+    this.wall.classList.toggle('is-on', kind === 'wall');
+    this.floor.classList.toggle('is-on', kind === 'floor');
+    this.wall.setAttribute('aria-pressed', String(kind === 'wall'));
+    this.floor.setAttribute('aria-pressed', String(kind === 'floor'));
     const { widthMm, heightMm, tiledHeightMm } = plan.surface;
-    const tiled = doc.active === 'wall' && tiledHeightMm !== undefined && tiledHeightMm < heightMm ? ` · tiled ${formatMm(tiledHeightMm)}` : '';
-    this.size.textContent = `${formatMm(widthMm)} × ${formatMm(heightMm)} mm${tiled}`;
+    const tiled = kind === 'wall' && tiledHeightMm !== undefined && tiledHeightMm < heightMm ? ` · tiled ${formatMm(tiledHeightMm)}` : '';
+    // A surface from the photo, shown flat in the designer, says which one it is.
+    const from = isPhotoRef(doc.active) ? `Photo ${photoSurfaceName(doc, doc.active).toLowerCase()}: ` : '';
+    this.size.textContent = `${from}${formatMm(widthMm)} × ${formatMm(heightMm)} mm${tiled}`;
     this.size.setAttribute('aria-label', `Size: ${this.size.textContent}. Edit`);
     this.undo.disabled = !state.canUndo;
     this.redo.disabled = !state.canRedo;
@@ -87,7 +93,7 @@ export class TopBar {
     const state = this.state;
     if (!state) return;
     const plan = activePlan(state.doc);
-    const wall = state.doc.active === 'wall';
+    const wall = activeKind(state.doc) === 'wall';
     const field = (label: string, value: number, apply: (mm: number) => void) => {
       const input = h('input', { type: 'number', inputMode: 'numeric', min: MIN_SIZE_MM, max: MAX_SIZE_MM, step: 10, value: String(value) });
       input.addEventListener('change', () => {

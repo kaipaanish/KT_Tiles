@@ -3,10 +3,15 @@ import { catalog } from '../designs/catalog';
 import { layoutSurface } from '../engine';
 import {
   addBand,
+  addPhotoSurface,
   applyPreset,
   assignTile,
+  fitToRectangle,
+  keepPhotoSurfaces,
   moveBand,
+  movePhotoCorner,
   removeBand,
+  removePhotoSurface,
   resetTiles,
   rotateCell,
   RotationError,
@@ -20,7 +25,8 @@ import {
   swapCells,
   tileAt,
 } from './actions';
-import { activePlan, createDefaultDocument, type DesignDoc } from './document';
+import type { Quad } from '../photo/homography';
+import { activeKind, activePlan, createDefaultDocument, type DesignDoc } from './document';
 import { Store, type UiState } from './store';
 
 const fresh = () => createDefaultDocument(catalog);
@@ -207,5 +213,80 @@ describe('opening design', () => {
     const result = layoutSurface(plan.surface, plan.layout, plan.alignment, plan.overrides, catalog);
     expect(result.pieces.filter((p) => p.isCut)).toHaveLength(0);
     expect(doc.floor.alignment).toEqual({ x: { mode: 'centre-joint' }, y: { mode: 'centre-joint' } });
+  });
+});
+
+describe('photo surfaces', () => {
+  const quad: Quad = [
+    { x: 100, y: 900 },
+    { x: 900, y: 900 },
+    { x: 900, y: 100 },
+    { x: 100, y: 100 },
+  ];
+  const addWall = (doc: DesignDoc, photoId = 'photo-a') => addPhotoSurface(doc, { photoId, kind: 'wall', seed: { x: 500, y: 500 }, quad, starter: false });
+  const ui: UiState = { view: 'photo', mode: 'pattern', tab: 'photo', selectedBand: null, selectedCell: null, toggles: { showCuts: true, showRepeat: false, showMotifs: false, showDims: true } };
+
+  it("start with the designer's design and size, and become the surface being edited", () => {
+    const designer = rotateCell(stepBandRows(fresh(), 2, 1, catalog), { col: 0, row: 0 }, catalog);
+    const doc = addWall(designer);
+    expect(doc.active).toBe('photo-1');
+    expect(activeKind(doc)).toBe('wall');
+    const surface = doc.photo[0]!;
+    expect(surface.plan.layout).toEqual(designer.wall.layout);
+    expect(surface.plan.surface).toEqual(designer.wall.surface);
+    // Single-tile changes belong to the designer's grid, so they stay behind.
+    expect(surface.plan.overrides).toEqual({});
+    expect(surface.fit).toMatchObject({ marks: 'surface', confirmed: false, starter: false });
+  });
+
+  it("edit only themselves: the designer's wall stays as it was", () => {
+    let doc = addWall(fresh());
+    doc = setSeries(doc, 'demo-azure-medallion', catalog);
+    doc = setSurfaceSize(doc, { widthMm: 3000 });
+    doc = addBand(doc, catalog);
+    expect(activePlan(doc).layout.seriesId).toBe('demo-azure-medallion');
+    expect(activePlan(doc).surface.widthMm).toBe(3000);
+    expect(doc.wall).toEqual(fresh().wall);
+  });
+
+  it('let a floor and a wall in the same photo use different series', () => {
+    let doc = setSeries(addWall(fresh()), 'demo-azure-medallion', catalog);
+    doc = addPhotoSurface(doc, { photoId: 'photo-a', kind: 'floor', seed: { x: 500, y: 950 }, quad, starter: false });
+    expect(doc.active).toBe('photo-2');
+    expect(activePlan(doc).layout.seriesId).toBe('demo-floor');
+    // A floor in the photo stays a floor: a wall series doesn't apply to it.
+    expect(setSeries(doc, 'demo-ivory-bloom', catalog)).toBe(doc);
+    expect(applyPreset(doc, 'classic', catalog)).toBe(doc);
+    expect(doc.photo.map((s) => s.plan.layout.seriesId)).toEqual(['demo-azure-medallion', 'demo-floor']);
+  });
+
+  it('move a corner as one undo step per drag', () => {
+    const store = new Store(addWall(fresh()), ui);
+    for (const x of [110, 120, 130]) store.preview((doc) => movePhotoCorner(doc, 'photo-1', 0, { x, y: 905 }));
+    store.endGesture();
+    expect(store.get().doc.photo[0]!.fit.quad[0]).toEqual({ x: 130, y: 905 });
+    store.undo();
+    expect(store.get().doc.photo[0]!.fit.quad[0]).toEqual({ x: 100, y: 900 });
+  });
+
+  it('take their size from the photo when the corners mark a rectangle of known size', () => {
+    const doc = fitToRectangle(addWall(fresh()), 'photo-1', { w: 800, h: 2000 }, { minX: -604, minY: -3, maxX: 1796, maxY: 2702 });
+    const surface = doc.photo[0]!;
+    // Rounded to 10 mm; the rectangle sits where the region's bottom-left puts it.
+    expect(surface.plan.surface).toEqual({ widthMm: 2400, heightMm: 2710, tiledHeightMm: 2710 });
+    expect(surface.fit).toMatchObject({ marks: 'rectangle', rect: { x: 604, y: 3, w: 800, h: 2000 } });
+  });
+
+  it('hand editing back to the designer surface of the same kind when removed', () => {
+    const doc = removePhotoSurface(addWall(setSeries(fresh(), 'demo-floor', catalog)), 'photo-1');
+    expect(doc.photo).toEqual([]);
+    expect(doc.active).toBe('wall');
+  });
+
+  it('are dropped when another photo is opened', () => {
+    const doc = keepPhotoSurfaces(addWall(addWall(fresh(), 'photo-a'), 'photo-b'), 'photo-b');
+    expect(doc.photo.map((s) => s.id)).toEqual(['photo-2']);
+    expect(doc.active).toBe('photo-2');
+    expect(keepPhotoSurfaces(doc, null).active).toBe('wall');
   });
 });

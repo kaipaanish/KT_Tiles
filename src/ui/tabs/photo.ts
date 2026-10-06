@@ -1,6 +1,10 @@
+import { formatMm } from '../../engine';
 import type { PhotoMode } from '../../photo/photoMode';
 import { PHOTO_ICONS } from '../../photo/photoView';
-import { labelShares, styleFor } from '../../photo/regions';
+import { labelShares } from '../../photo/regions';
+import * as act from '../../state/actions';
+import { activeKind, photoSurface, photoSurfaceName } from '../../state/document';
+import type { AppState } from '../../state/store';
 import { h, icon } from '../dom';
 import type { TabContext } from './context';
 import { section } from './parts';
@@ -45,13 +49,10 @@ export function photoTab(ctx: TabContext): HTMLElement {
     ),
   );
 
+  if (photo) root.append(surfaceList(ctx));
+
   if (photo) {
     const content = h('div', { class: 'photo-found' }, h('p', { class: 'photo-status' }, statusLine(mode)));
-    const selection = mode.selection;
-    const selected = selection && styleFor(selection.label);
-    if (selection && selected) {
-      content.append(h('p', { class: 'photo-status' }, h('strong', {}, `${selected.name} selected`), ` · ${percent(selection.share)} of the photo`));
-    }
     if (mode.status.state === 'ready') {
       content.append(
         h(
@@ -96,4 +97,45 @@ export function photoTab(ctx: TabContext): HTMLElement {
     root.append(section('Sample photos', list));
   }
   return root;
+}
+
+/** The walls and floor picked in this photo, each with its own design. */
+function surfaceList(ctx: TabContext): HTMLElement {
+  const { state, catalog, store } = ctx;
+  const doc = state.doc;
+  const surfaces = ctx.photo.surfaces;
+  if (surfaces.length === 0) return section('Tiled surfaces', h('p', { class: 'tab-hint' }, 'Tap a wall or the floor in the photo to tile it.'));
+  const list = h('ul', { class: 'surface-list' });
+  for (const surface of surfaces) {
+    const name = photoSurfaceName(doc, surface.id);
+    const active = doc.active === surface.id;
+    const { widthMm, heightMm } = surface.plan.surface;
+    const size = surface.fit.confirmed ? `${formatMm(widthMm)} × ${formatMm(heightMm)} mm` : 'placing its corners';
+    const button = (label: string, onclick: () => void, aria?: string) =>
+      h('button', { type: 'button', class: 'pill-button', onclick, 'aria-label': aria ?? `${label}: ${name}` }, label);
+    list.append(
+      h(
+        'li',
+        { class: `surface-row${active ? ' is-active' : ''}` },
+        h('span', { class: 'surface-name' }, name),
+        h('span', { class: 'surface-meta' }, `${catalog.series(surface.plan.layout.seriesId).name} · ${size}`),
+        h(
+          'span',
+          { class: 'surface-actions' },
+          active ? null : button('Edit', () => store.commit((d) => act.setActive(d, surface.id))),
+          surface.fit.confirmed ? button('Corners', () => ctx.photo.adjustCorners(surface.id), `Adjust the corners: ${name}`) : null,
+          button('Remove', () => store.commit((d) => act.removePhotoSurface(d, surface.id))),
+        ),
+      ),
+    );
+  }
+  return section('Tiled surfaces', list, 'Each has its own design: change it in the Design, Tiles, Align and Count tabs.');
+}
+
+/** In photo mode, a line at the top of the other tabs saying what they change. */
+export function photoContext(state: AppState): HTMLElement | null {
+  if (state.ui.view !== 'photo') return null;
+  const surface = photoSurface(state.doc, state.doc.active);
+  if (surface) return h('p', { class: 'photo-context' }, 'Editing ', h('strong', {}, photoSurfaceName(state.doc, surface.id)), ' in the photo.');
+  return h('p', { class: 'photo-context' }, `Tap a wall or the floor in the photo to tile it. Until then, this changes the designer's ${activeKind(state.doc)}.`);
 }

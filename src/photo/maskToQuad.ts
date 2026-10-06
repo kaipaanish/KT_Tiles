@@ -121,7 +121,7 @@ export function fillHoles(mask: Mask): Mask {
 }
 
 /** Corners of the leftmost and rightmost pixel in each row: enough to find the convex hull. */
-function rowExtremes(mask: Mask): Pt[] {
+export function rowExtremes(mask: Mask): Pt[] {
   const points: Pt[] = [];
   for (let y = 0; y < mask.height; y++) {
     let min = -1;

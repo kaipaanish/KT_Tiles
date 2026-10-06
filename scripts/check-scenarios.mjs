@@ -31,6 +31,21 @@ const screenOf = (page, x, y) => page.evaluate(([px, py]) => window.ktDebug.scre
 const viewScale = (page) => page.evaluate(() => window.ktDebug.view().scale);
 const fittedScale = (page) => page.evaluate(() => window.ktDebug.fittedScale());
 const pct = (share) => `${Math.round(share * 100)}%`;
+const surfacesOf = (page) => page.evaluate(() => window.ktDebug.surfaces());
+/** Taps the deepest point of the largest region with a label (1 wall, 2 floor). */
+async function tapLabel(page, device, label) {
+  const point = await page.evaluate((l) => window.ktDebug.labelPoint(l), label);
+  assert(point, `a region labelled ${label} to tap`);
+  const input = await pointer(page, device);
+  await input.tap(await photoScreen(page, point.x, point.y));
+}
+/** Opens a sheet tab (on the phone this also unfolds the sheet). One press is enough: a second would fold it. */
+async function openTab(page, device, name) {
+  const body = page.locator(`.tab-${name.toLowerCase()}`);
+  if (await body.isVisible()) return;
+  await press(page, device, `.sheet-tab:text-is("${name}")`);
+  await body.waitFor({ state: 'visible', timeout: 2000 });
+}
 /** Waits for a photo to be open and its walls found (the first run downloads the model), and returns the result. */
 async function segmented(page, name) {
   await page.waitForFunction(
@@ -582,10 +597,10 @@ export const scenarios = [
         assert(point, 'a wall region to tap');
         const input = await pointer(page, device);
         await input.tap(await photoScreen(page, point.x, point.y));
-        await page.waitForFunction(() => window.ktDebug.selection()?.label === 1, null, { timeout: 3000 });
-        const selection = await page.evaluate(() => window.ktDebug.selection());
-        console.log(`    tapped wall: ${pct(selection.share)} of the photo, ${selection.starter ? 'starter quad (two walls?)' : 'fitted quad'}, 1 − IoU ${pct(selection.mismatch)}`);
-        assert(selection.quad?.length === 4, 'the tapped wall has four corners');
+        await page.waitForFunction(() => window.ktDebug.surfaces().some((s) => s.kind === 'wall'), null, { timeout: 3000 });
+        const [wall] = await surfacesOf(page);
+        console.log(`    tapped wall: ${wall.starter ? 'starter rectangle (the region is not one quadrilateral)' : 'corners fitted to the region'}`);
+        assert(wall.quad?.length === 4, 'the tapped wall has four corners');
         await pause(150);
         await shot(`wall-${i + 1}`);
       }
@@ -626,6 +641,162 @@ export const scenarios = [
           await shot(`${name}-${edges}`);
         }
       }
+    },
+  },
+
+  // ---- Picking surfaces in the photo: corners with a loupe, the real size, a wall and a floor with different series
+  {
+    name: 'photo-fit',
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      const before = await state(page);
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      const [wall] = await surfacesOf(page);
+      assert(wall.kind === 'wall' && wall.active && !wall.confirmed, 'a wall to fit, being edited');
+      assert(wall.series === before.doc.wall.layout.seriesId, "it starts with the designer's wall series");
+      assert(wall.size.w === before.doc.wall.surface.widthMm && wall.size.h === before.doc.wall.surface.heightMm, "its size is pre-filled from the designer's wall");
+      // This sample's wall region wraps two walls, so its corners start as a rectangle around the tap.
+      assert(wall.starter, 'a starter rectangle for a region covering two walls');
+      assert((await page.locator('.photo-hint').textContent()) === "Drag the corners to this wall's edges", 'the hint for a starter rectangle');
+      assert(await page.locator('.fit-card').isVisible(), 'the fit card is showing');
+      await shot('fitting');
+
+      // Drag the top-right corner; the loupe shows while dragging, and the drag is one undo step.
+      const input = await pointer(page, device);
+      const scale = (await page.evaluate(() => window.ktDebug.photo().view)).scale;
+      const from = await photoScreen(page, wall.quad[2].x, wall.quad[2].y);
+      await input.down(from);
+      await input.move({ x: from.x + 20, y: from.y + 15 }, 4);
+      await input.move({ x: from.x + 40, y: from.y + 30 }, 4);
+      await pause(100);
+      await shot('loupe');
+      await input.up();
+      await pause(60);
+      let [moved] = await surfacesOf(page);
+      const dx = moved.quad[2].x - wall.quad[2].x;
+      const dy = moved.quad[2].y - wall.quad[2].y;
+      assert(Math.abs(dx - 40 / scale) < 3 && Math.abs(dy - 30 / scale) < 3, `the corner follows the pointer (moved ${dx.toFixed(1)}, ${dy.toFixed(1)} photo px)`);
+      await press(page, device, 'button[aria-label="Undo"]');
+      [moved] = await surfacesOf(page);
+      assert(moved.quad[2].x === wall.quad[2].x && moved.quad[2].y === wall.quad[2].y, 'undo puts the corner back');
+      await press(page, device, 'button[aria-label="Redo"]');
+      [moved] = await surfacesOf(page);
+      assert(Math.abs(moved.quad[2].x - wall.quad[2].x - dx) < 1e-6, 'redo moves it again');
+
+      // Confirm the real width, then Done: the tile grid appears in perspective.
+      const width = page.locator('.fit-card input[aria-label="Real width"]');
+      await width.fill('2450');
+      await width.press('Enter');
+      await expectState(page, (st) => st.doc.photo[0]?.plan.surface.widthMm === 2450, 'the width is confirmed', (st) => st.doc.photo[0]?.plan.surface);
+      assert((await state(page)).doc.wall.surface.widthMm === before.doc.wall.surface.widthMm, "the designer's wall keeps its size");
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      assert(!(await page.locator('.fit-card').isVisible()), 'the fit card closes');
+      await pause(150);
+      await shot('wall-tiled');
+
+      // The floor: a second surface, with the floor's design.
+      await tapLabel(page, device, 2);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 2, null, { timeout: 3000 });
+      const floor = (await surfacesOf(page))[1];
+      assert(floor.kind === 'floor' && floor.active && floor.series === before.doc.floor.layout.seriesId, 'the floor is added with the floor series');
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[1]?.confirmed, null, { timeout: 2000 });
+
+      // Editing the floor, the Design tab offers floor series only.
+      await openTab(page, device, 'Design');
+      assert((await page.locator('.photo-context').textContent()).includes('Floor'), 'the tab says the floor is being edited');
+      const floorSeries = await page.locator('.tab-design .series-name').allTextContents();
+      assert(floorSeries.length > 0 && floorSeries.every((name) => /floor/i.test(name)), `floor series only (${floorSeries.join(', ')})`);
+
+      // Back to the wall (tap it), and give it another series: the floor and the designer keep theirs.
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.active, null, { timeout: 2000 });
+      await openTab(page, device, 'Design');
+      const wallSeries = await page.locator('.tab-design .series-name').allTextContents();
+      assert(wallSeries.length > 1 && !wallSeries.some((name) => /floor/i.test(name)), `wall series only (${wallSeries.join(', ')})`);
+      await press(page, device, '.tab-design .series-choice:has-text("Demo Azure Medallion")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.series === 'demo-azure-medallion', null, { timeout: 2000 });
+      const after = await state(page);
+      assert(after.doc.photo[1].plan.layout.seriesId === before.doc.floor.layout.seriesId, 'the floor keeps its series');
+      assert(after.doc.wall.layout.seriesId === before.doc.wall.layout.seriesId, "the designer's wall keeps its series");
+      await pause(150);
+      await shot('wall-and-floor');
+
+      // The designer shows the photo wall flat, and says so; Wall goes back to the designer's own wall.
+      await press(page, device, '.view-toggle button[aria-label="Designer"]');
+      await page.waitForFunction(() => /^Photo wall: 2450/.test(document.querySelector('.size-chip')?.textContent ?? ''), null, { timeout: 2000 });
+      await pause(150);
+      await shot('designer');
+      await press(page, device, '.surface-toggle button:has-text("Wall")');
+      await expectState(page, (st) => st.doc.active === 'wall', "the designer's own wall", (st) => st.doc.active);
+      assert(!(await page.locator('.size-chip').textContent()).startsWith('Photo'), 'the size chip shows the designer wall');
+    },
+  },
+  {
+    // The corners can mark any rectangle of known size; the surface is then measured from the photo.
+    // The fake segmenter gives a plain room, so the wall's corners are fitted to its whole region.
+    name: 'photo-rectangle',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&segmenter=fake&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      const [wall] = await surfacesOf(page);
+      assert(!wall.starter, 'a plain wall region gets fitted corners, not a starter');
+      await press(page, device, '.fit-card button:text-is("A known rectangle")');
+      assert(await page.locator('.fit-note').isVisible(), 'the rectangle mode explains itself');
+      assert((await page.locator('.photo-hint').textContent()) === "Drag the corners to the rectangle's corners", 'the hint for a rectangle');
+      // Say the fitted corners mark a 1200 × 1000 mm rectangle: the region is exactly that rectangle.
+      for (const [label, value] of [
+        ['Rectangle width', '1200'],
+        ['Rectangle height', '1000'],
+      ]) {
+        const input = page.locator(`.fit-card input[aria-label="${label}"]`);
+        await input.fill(value);
+        await input.press('Enter');
+      }
+      await expectState(page, (st) => st.doc.photo[0]?.fit.rect.w === 1200 && st.doc.photo[0]?.fit.rect.h === 1000, 'the rectangle size is set', (st) => st.doc.photo[0]?.fit);
+      await shot('rectangle');
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      const [measured] = await surfacesOf(page);
+      assert(measured.marks === 'rectangle', 'the corners mark a rectangle');
+      assert(Math.abs(measured.size.w - 1200) <= 20 && Math.abs(measured.size.h - 1000) <= 20, `the wall is measured from the photo (${measured.size.w} × ${measured.size.h} mm)`);
+      await pause(150);
+      await shot('measured');
+    },
+  },
+  {
+    // Addition 4: photo work isn't saved, so leaving asks first, but only once there are photo surfaces.
+    name: 'photo-leave',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&segmenter=fake&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      const asks = () =>
+        page.evaluate(() => {
+          const event = new Event('beforeunload', { cancelable: true });
+          window.dispatchEvent(event);
+          return event.defaultPrevented;
+        });
+      assert(!(await asks()), "no prompt while there's nothing to lose");
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      assert(await asks(), 'a prompt once there is a photo surface');
+      // The real thing: closing the page shows the browser's "Leave site?" dialog.
+      const dialog = page.waitForEvent('dialog', { timeout: 5000 });
+      await page.close({ runBeforeUnload: true });
+      const shown = await dialog;
+      assert(shown.type() === 'beforeunload', `the browser's leave dialog (got ${shown.type()})`);
+      await shown.dismiss();
+      assert(!page.isClosed(), 'staying on the page keeps it open');
+      await press(page, device, 'button[aria-label="Undo"]');
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 0, null, { timeout: 2000 });
+      assert(!(await asks()), 'no prompt once the surface is undone');
     },
   },
 

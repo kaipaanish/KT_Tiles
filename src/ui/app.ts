@@ -12,8 +12,8 @@ import {
 import { toSurface, type Appearance, type Overlay } from '../render/renderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
-import { activePlan, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
-import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, VIEW_KEY, writeStorage } from '../state/persist';
+import { activeKind, activePlan, activeWall, applyQuery, createDefaultDocument, type DesignDoc } from '../state/document';
+import { DESIGN_KEY, parseSavedDesign, parseSavedToggles, readStorage, serializeDesign, VIEW_KEY, writeStorage } from '../state/persist';
 import { PhotoMode } from '../photo/photoMode';
 import { largestRegion } from '../photo/maskToQuad';
 import { labelShares } from '../photo/regions';
@@ -32,7 +32,7 @@ import { alignTab } from './tabs/align';
 import type { TabContext } from './tabs/context';
 import { countTab } from './tabs/count';
 import { designTab } from './tabs/design';
-import { photoTab } from './tabs/photo';
+import { photoContext, photoTab } from './tabs/photo';
 import { tilesTab } from './tabs/tiles';
 import { clearThumbs } from './thumbs';
 import { TopBar } from './topbar';
@@ -86,10 +86,14 @@ export function startApp(root: HTMLElement): void {
 
   // ---- Autosave: the design shortly after each change (and when the page is hidden), the view toggles at once.
   let saveTimer: number | undefined;
+  let saved = '';
   const saveNow = () => {
     window.clearTimeout(saveTimer);
     saveTimer = undefined;
-    writeStorage(DESIGN_KEY, JSON.stringify(store.get().doc));
+    // Photo surfaces aren't saved, so changes to them alone write nothing.
+    const design = serializeDesign(store.get().doc);
+    if (design !== saved) writeStorage(DESIGN_KEY, design);
+    saved = design;
   };
   store.subscribe((state, previous) => {
     if (state.doc !== previous.doc) {
@@ -102,6 +106,19 @@ export function startApp(root: HTMLElement): void {
     if (saveTimer !== undefined) saveNow();
   };
   window.addEventListener('pagehide', flush);
+
+  // ---- Photo work isn't autosaved (photos stay in memory), so the browser asks before the page is
+  // left while there are photo surfaces that haven't been shared or downloaded since they changed.
+  let photoWorkKept = true;
+  store.subscribe((state, previous) => {
+    if (state.doc.photo !== previous.doc.photo) photoWorkKept = state.doc.photo.length === 0;
+  });
+  window.addEventListener('beforeunload', (event) => {
+    if (photoWorkKept) return;
+    event.preventDefault();
+    // Older browsers show the prompt only when returnValue is set.
+    event.returnValue = '';
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flush();
   });
@@ -187,6 +204,8 @@ export function startApp(root: HTMLElement): void {
   designerLayer.append(bandHandles.el, h('div', { class: 'stage-top' }, modeSwitch.el), viewControls.el, warnings.el);
   const photoMode = new PhotoMode(
     stage,
+    store,
+    catalog,
     {
       changed: () => {
         sheetTab = null;
@@ -237,7 +256,10 @@ export function startApp(root: HTMLElement): void {
       sheet.setTab(tab);
       if (!sheet.isOpen) return;
       const ctx = tabContext();
-      sheet.render(TAB_VIEWS[tab](ctx), tab === sheetTab);
+      const content = TAB_VIEWS[tab](ctx);
+      const context = tab === 'photo' ? null : photoContext(ctx.state);
+      if (context) content.prepend(context);
+      sheet.render(content, tab === sheetTab);
       sheetTab = tab;
     });
   }
@@ -251,13 +273,14 @@ export function startApp(root: HTMLElement): void {
   const render = () => {
     const state = store.get();
     const current = layoutFor(state.doc);
-    // Keep textures for the wall's and the floor's series only, and paint the shown one up front.
-    const { wall, floor } = state.doc;
-    const key = `${wall.layout.seriesId}|${floor.layout.seriesId}|${state.doc.active}`;
+    // Keep textures for the series in use only (the designer's wall and floor, and the photo's
+    // surfaces), and paint the shown one up front.
+    const inUse = [...new Set([state.doc.wall, state.doc.floor, ...state.doc.photo.map((s) => s.plan)].map((p) => p.layout.seriesId))];
+    const key = `${inUse.join('|')}|${activePlan(state.doc).layout.seriesId}`;
     if (key !== seriesInUse) {
       seriesInUse = key;
       const tilesOf = (seriesId: string) => catalog.tilesOf(seriesId).map((t) => t.id);
-      textures.retain([...tilesOf(wall.layout.seriesId), ...tilesOf(floor.layout.seriesId)]);
+      textures.retain(inUse.flatMap(tilesOf));
       textures.prepare(tilesOf(activePlan(state.doc).layout.seriesId));
     }
     const { toggles, mode } = state.ui;
@@ -268,15 +291,16 @@ export function startApp(root: HTMLElement): void {
       overlay: {
         ...overlay,
         selectedCell: mode === 'tile' ? state.ui.selectedCell : null,
-        selectedBand: mode !== 'tile' && state.doc.active === 'wall' ? state.ui.selectedBand : null,
+        selectedBand: mode !== 'tile' && activeKind(state.doc) === 'wall' ? state.ui.selectedBand : null,
       },
     });
     const photoView = state.ui.view === 'photo';
     designerLayer.classList.toggle('is-hidden', photoView);
+    photoMode.update(state.doc);
     photoMode.show(photoView);
     sheet.showPhotoTab(photoView);
     topbar.update(state);
-    modeSwitch.update(mode, state.doc.active);
+    modeSwitch.update(mode, activeKind(state.doc));
     viewControls.update(toggles, mode === 'tile' && Object.keys(activePlan(state.doc).overrides).length > 0);
     warnings.update(current.warnings, !!overlay.dragging);
     // The panel follows along, but not on every frame of a drag.
@@ -303,7 +327,7 @@ export function startApp(root: HTMLElement): void {
 
   function setMode(mode: Mode): void {
     designPopover.close();
-    if (store.get().doc.active === 'floor' && mode === 'row') return;
+    if (activeKind(store.get().doc) === 'floor' && mode === 'row') return;
     store.setUi({ mode, selectedCell: null, selectedBand: null });
     toast(stage, modeHint(mode));
   }
@@ -317,15 +341,15 @@ export function startApp(root: HTMLElement): void {
   }
 
   function openDesignPicker(index: number, anchor: Element | { x: number; y: number }): void {
-    const doc = store.get().doc;
-    const band = doc.wall.layout.bands[index];
-    if (!band) return;
+    const wall = activeWall(store.get().doc);
+    const band = wall?.layout.bands[index];
+    if (!wall || !band) return;
     store.setUi({ selectedBand: index });
     const content = h(
       'div',
       {},
       h('p', { class: 'popover-title' }, `Band ${index + 1}: choose a design`),
-      designChoices(doc.wall.layout.seriesId, band.designId, catalog, textures, (designId) => {
+      designChoices(wall.layout.seriesId, band.designId, catalog, textures, (designId) => {
         store.commit((d) => act.setBandDesign(d, index, designId, catalog));
         designPopover.close();
       }),
@@ -500,10 +524,16 @@ export function startApp(root: HTMLElement): void {
         const { model, timings, width, height } = status.segmentation;
         return { state: status.state, model, timings, width, height, shares: labelShares(status.segmentation) };
       },
-      selection: () => {
-        const selection = photoMode.selection;
-        return selection ? { label: selection.label, share: selection.share, quad: selection.quad, starter: selection.starter, mismatch: selection.mismatch } : null;
-      },
+      /** The surfaces picked in the current photo. */
+      surfaces: () =>
+        photoMode.surfaces.map((s) => ({
+          id: s.id,
+          kind: s.plan.layout.surface,
+          series: s.plan.layout.seriesId,
+          size: { w: s.plan.surface.widthMm, h: s.plan.surface.heightMm },
+          active: store.get().doc.active === s.id,
+          ...s.fit,
+        })),
       /** A photo pixel well inside the biggest region with a label (1 wall, 2 floor), for checks to tap. */
       labelPoint: (label: number) => {
         const segmentation = photoMode.segmentation;

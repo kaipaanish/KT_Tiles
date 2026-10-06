@@ -13,7 +13,7 @@ import {
   type YMode,
 } from '../engine';
 import { MAX_SIZE_MM, MIN_SIZE_MM } from './actions';
-import { DEFAULT_SETTINGS, type DesignDoc, type FloorLayout, type Settings, type SurfacePlan, type WallLayout } from './document';
+import { activeKind, DEFAULT_SETTINGS, isPhotoRef, type DesignDoc, type FloorLayout, type Settings, type SurfacePlan, type WallLayout } from './document';
 import type { Toggles } from './store';
 
 /** Bump the version when the saved shape changes; older saves then start fresh. */
@@ -123,6 +123,15 @@ function settings(value: unknown): Settings | null {
   };
 }
 
+/**
+ * The design as saved. Photo surfaces stay out because their photo is never saved; while one is
+ * being edited, the save has the designer's surface of the same kind.
+ */
+export function serializeDesign(doc: DesignDoc): string {
+  const { photo: _photo, ...rest } = doc;
+  return JSON.stringify({ ...rest, active: isPhotoRef(doc.active) ? activeKind(doc) : doc.active });
+}
+
 /** A saved design, or null when it is missing, damaged, or no longer fits the catalog. */
 export function parseSavedDesign(raw: string | null, catalog: Catalog): DesignDoc | null {
   if (!raw) return null;
@@ -137,7 +146,7 @@ export function parseSavedDesign(raw: string | null, catalog: Catalog): DesignDo
     const wall = plan<WallLayout>(data['wall'], true, catalog);
     const floor = plan<FloorLayout>(data['floor'], false, catalog);
     const s = settings(data['settings']);
-    return wall && floor && s ? { version: 1, active: data['active'], wall, floor, settings: s } : null;
+    return wall && floor && s ? { version: 1, active: data['active'], wall, floor, photo: [], settings: s } : null;
   } catch {
     return null;
   }

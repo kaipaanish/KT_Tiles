@@ -1,5 +1,6 @@
 import { countTiles, formatMm } from '../../engine';
 import * as act from '../../state/actions';
+import { activeKind } from '../../state/document';
 import { h } from '../dom';
 import { tileThumb } from '../thumbs';
 import type { TabContext } from './context';
@@ -48,7 +49,7 @@ export function countTab(ctx: TabContext): HTMLElement {
     onCommit: (pct) => store.commit((d) => act.setSettings(d, { allowancePct: pct })),
   });
 
-  const surface = state.doc.active === 'wall' ? 'wall' : 'floor';
+  const surface = activeKind(state.doc);
   return h(
     'div',
     { class: 'tab tab-count' },

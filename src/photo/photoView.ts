@@ -49,6 +49,7 @@ export class PhotoView {
   private photo: Photo | null = null;
   private transform: PhotoTransform | null = null;
   private autoFit = true;
+  private margin = { ...MARGIN };
   private frame = { width: 1, height: 1, dpr: 1 };
   private queued = false;
   interaction: PhotoInteraction | null = null;
@@ -110,6 +111,18 @@ export class PhotoView {
     this.requestDraw();
   }
 
+  /**
+   * Keeps the bottom of the stage clear for a card floating there: the photo fits above it. A view
+   * the user has zoomed or panned stays where it is.
+   */
+  setBottomInset(px: number): void {
+    const bottom = Math.max(MARGIN.bottom, Math.round(px));
+    if (bottom === this.margin.bottom) return;
+    this.margin = { ...this.margin, bottom };
+    if (this.autoFit) this.transform = null;
+    this.requestDraw();
+  }
+
   /** The photo's fitted scale, for zoom limits. */
   fittedScale(): number {
     return this.photo ? this.fitted(this.photo).scale : 1;
@@ -119,8 +132,9 @@ export class PhotoView {
   zoomTo(centre: Pt, zoom: number): void {
     if (!this.photo) return;
     const scale = this.fitted(this.photo).scale * zoom;
-    const midX = MARGIN.left + (this.frame.width - MARGIN.left - MARGIN.right) / 2;
-    const midY = MARGIN.top + (this.frame.height - MARGIN.top - MARGIN.bottom) / 2;
+    const m = this.margin;
+    const midX = m.left + (this.frame.width - m.left - m.right) / 2;
+    const midY = m.top + (this.frame.height - m.top - m.bottom) / 2;
     this.transform = { scale, x: midX - centre.x * scale, y: midY - centre.y * scale };
     this.autoFit = false;
     this.requestDraw();
@@ -166,13 +180,14 @@ export class PhotoView {
   }
 
   private fitted(photo: Photo): PhotoTransform {
-    const freeW = Math.max(40, this.frame.width - MARGIN.left - MARGIN.right);
-    const freeH = Math.max(40, this.frame.height - MARGIN.top - MARGIN.bottom);
+    const m = this.margin;
+    const freeW = Math.max(40, this.frame.width - m.left - m.right);
+    const freeH = Math.max(40, this.frame.height - m.top - m.bottom);
     const scale = Math.min(freeW / photo.width, freeH / photo.height);
     return {
       scale,
-      x: MARGIN.left + (freeW - photo.width * scale) / 2,
-      y: MARGIN.top + (freeH - photo.height * scale) / 2,
+      x: m.left + (freeW - photo.width * scale) / 2,
+      y: m.top + (freeH - photo.height * scale) / 2,
     };
   }
 

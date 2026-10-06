@@ -1,6 +1,6 @@
 import type { BandExtent, Catalog, LayoutResult } from '../engine';
 import { screenRect, type View } from '../render/renderer';
-import type { DesignDoc } from '../state/document';
+import { activeWall, type DesignDoc } from '../state/document';
 import { h, icon, ICONS } from './dom';
 import { bandRangeLabel, rowsLabel } from './labels';
 
@@ -53,7 +53,7 @@ export class BandHandles {
     if (this.el.hidden) return;
     this.result = result;
     this.view = view;
-    const signature = JSON.stringify([doc.wall.layout.bands, result.bands, selected]);
+    const signature = JSON.stringify([activeWall(doc)?.layout.bands, result.bands, selected]);
     if (signature !== this.signature && !this.drag) {
       this.signature = signature;
       this.build(result, doc, selected);
@@ -62,7 +62,7 @@ export class BandHandles {
   }
 
   private build(result: LayoutResult, doc: DesignDoc, selected: number | null): void {
-    const bands = doc.wall.layout.bands;
+    const bands = activeWall(doc)?.layout.bands ?? [];
     this.items = [];
     this.el.replaceChildren(this.dropLine);
     for (const extent of result.bands) {

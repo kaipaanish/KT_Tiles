@@ -1,7 +1,7 @@
 import { layoutSurface, presetsFor, type Layout, type Preset } from '../../engine';
 import { drawScene } from '../../render/renderer';
 import * as act from '../../state/actions';
-import { activePlan } from '../../state/document';
+import { activeFloor, activeKind, activePlan, activeWall } from '../../state/document';
 import { designChoices } from '../designPicker';
 import { h, icon, ICONS } from '../dom';
 import { bandRangeLabel, rowsLabel } from '../labels';
@@ -14,11 +14,11 @@ export function designTab(ctx: TabContext): HTMLElement {
   const { doc } = ctx.state;
   const root = h('div', { class: 'tab tab-design' });
   root.append(section('Series', seriesList(ctx)));
-  if (doc.active === 'wall') {
+  const floor = activeFloor(doc)?.layout;
+  if (!floor) {
     root.append(section('Presets', presetList(ctx)));
     root.append(section('Bands', bandList(ctx), 'Listed from the top of the wall down; heights are measured from the floor.'));
   } else {
-    const floor = doc.floor.layout;
     root.append(
       section(
         'Floor design',
@@ -34,7 +34,7 @@ function seriesList(ctx: TabContext): HTMLElement {
   const { state, catalog, store } = ctx;
   const current = activePlan(state.doc).layout.seriesId;
   const list = h('div', { class: 'series-list' });
-  for (const series of catalog.seriesList(state.doc.active)) {
+  for (const series of catalog.seriesList(activeKind(state.doc))) {
     const tiles = catalog.tilesOf(series.id);
     const size = catalog.tileSize(series.id);
     const selected = series.id === current;
@@ -80,7 +80,8 @@ function presetPreview(ctx: TabContext, layout: Layout): HTMLCanvasElement {
   canvas.style.height = `${height}px`;
   const c2d = canvas.getContext('2d');
   if (!c2d) return canvas;
-  const result = layoutSurface(doc.wall.surface, layout, doc.wall.alignment, {}, ctx.catalog);
+  const wall = activeWall(doc) ?? doc.wall;
+  const result = layoutSurface(wall.surface, layout, wall.alignment, {}, ctx.catalog);
   const view = fitView(result.widthMm, result.heightMm, width, height, { top: 2, right: 2, bottom: 2, left: 2 });
   drawScene(
     c2d,
@@ -99,8 +100,9 @@ function presetList(ctx: TabContext): HTMLElement {
   const { doc } = ctx.state;
   const { catalog, store } = ctx;
   const list = h('div', { class: 'preset-list' });
-  for (const { preset, bands } of presetsFor(doc.wall.layout.seriesId, catalog)) {
-    const selected = JSON.stringify(bands) === JSON.stringify(doc.wall.layout.bands);
+  const wall = activeWall(doc) ?? doc.wall;
+  for (const { preset, bands } of presetsFor(wall.layout.seriesId, catalog)) {
+    const selected = JSON.stringify(bands) === JSON.stringify(wall.layout.bands);
     list.append(
       h(
         'button',
@@ -110,7 +112,7 @@ function presetList(ctx: TabContext): HTMLElement {
           'aria-pressed': String(selected),
           onclick: () => store.commit((d) => act.applyPreset(d, preset.id, catalog)),
         },
-        presetPreview(ctx, { ...doc.wall.layout, bands }),
+        presetPreview(ctx, { ...wall.layout, bands }),
         h('span', { class: 'preset-text' }, h('span', { class: 'preset-name' }, preset.name), h('span', { class: 'preset-desc' }, describePreset(preset))),
       ),
     );
@@ -121,7 +123,7 @@ function presetList(ctx: TabContext): HTMLElement {
 /** The same actions as the Row handles, as a list. */
 function bandList(ctx: TabContext): HTMLElement {
   const { state, result, catalog, textures, store } = ctx;
-  const bands = state.doc.wall.layout.bands;
+  const bands = (activeWall(state.doc) ?? state.doc.wall).layout.bands;
   const list = h('ol', { class: 'band-list' });
   for (let index = bands.length - 1; index >= 0; index--) {
     const band = bands[index];

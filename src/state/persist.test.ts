@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { catalog } from '../designs/catalog';
-import { moveBand, rotateCell, setAlignment, setSeries, setSurfaceSize, swapCells } from './actions';
+import { addPhotoSurface, moveBand, rotateCell, setAlignment, setSeries, setSurfaceSize, swapCells } from './actions';
 import { createDefaultDocument, type DesignDoc } from './document';
-import { parseSavedDesign, parseSavedToggles } from './persist';
+import { parseSavedDesign, parseSavedToggles, serializeDesign } from './persist';
 
 const fresh = () => createDefaultDocument(catalog);
 const roundTrip = (doc: DesignDoc) => parseSavedDesign(JSON.stringify(doc), catalog);
@@ -69,5 +69,21 @@ describe('saved settings from before the ranking change', () => {
     const doc = JSON.parse(JSON.stringify(createDefaultDocument(catalog)));
     doc.settings.suggestPriority = 'centre-motif';
     expect(parseSavedDesign(JSON.stringify(doc), catalog)?.settings.suggestPriority).toBe('symmetric');
+  });
+});
+
+describe('photo surfaces', () => {
+  it('are never saved; while one is being edited, the save has the designer surface of its kind', () => {
+    const quad = [
+      { x: 0, y: 10 },
+      { x: 10, y: 10 },
+      { x: 10, y: 0 },
+      { x: 0, y: 0 },
+    ] as const;
+    const doc = addPhotoSurface(setSeries(fresh(), 'demo-floor', catalog), { photoId: 'p', kind: 'wall', seed: { x: 5, y: 5 }, quad: [...quad], starter: false });
+    const saved = JSON.parse(serializeDesign(doc));
+    expect(saved.photo).toBeUndefined();
+    expect(saved.active).toBe('wall');
+    expect(parseSavedDesign(serializeDesign(doc), catalog)).toEqual({ ...doc, photo: [], active: 'wall' });
   });
 });

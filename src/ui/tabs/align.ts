@@ -11,7 +11,7 @@ import {
   type YMode,
 } from '../../engine';
 import * as act from '../../state/actions';
-import { activePlan } from '../../state/document';
+import { activeKind, activePlan } from '../../state/document';
 import { h } from '../dom';
 import type { TabContext } from './context';
 import { numberInput, section } from './parts';
@@ -88,7 +88,7 @@ export function alignTab(ctx: TabContext): HTMLElement {
   const { state, result, catalog, store } = ctx;
   const { doc } = state;
   const plan = activePlan(doc);
-  const wall = doc.active === 'wall';
+  const wall = activeKind(doc) === 'wall';
   const hasMotif = layoutHasMotif(plan.layout, catalog);
   const { w, h: th } = result.tile;
   const setX = (x: AxisAlignment<XMode>) => store.commit((d) => act.setAlignment(d, { ...activePlan(d).alignment, x }));

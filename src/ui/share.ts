@@ -2,7 +2,7 @@ import { countTiles, formatMm, type Catalog, type LayoutResult } from '../engine
 import { canvasToPng, renderShareImage, type ShareSummary } from '../render/exportPng';
 import type { Appearance } from '../render/renderer';
 import type { TextureCache } from '../render/textureCache';
-import { activePlan, type DesignDoc } from '../state/document';
+import { activeKind, activePlan, type DesignDoc } from '../state/document';
 
 export interface ShareContent extends ShareSummary {
   fileName: string;
@@ -14,7 +14,7 @@ export interface ShareContent extends ShareSummary {
 export function shareContent(doc: DesignDoc, result: LayoutResult, catalog: Catalog, today = new Date()): ShareContent {
   const plan = activePlan(doc);
   const series = catalog.series(plan.layout.seriesId);
-  const wall = doc.active === 'wall';
+  const wall = activeKind(doc) === 'wall';
   const { widthMm, heightMm, tiledHeightMm } = plan.surface;
   const tiled = wall && tiledHeightMm !== undefined && tiledHeightMm < heightMm ? `, tiled to ${formatMm(tiledHeightMm)} mm` : '';
   const size = `${formatMm(widthMm)} × ${formatMm(heightMm)} mm${tiled}`;
@@ -43,7 +43,7 @@ export function shareContent(doc: DesignDoc, result: LayoutResult, catalog: Cata
     title,
     lines,
     footer: `KT Tile Designer · ${date} · cut pieces counted as whole tiles`,
-    fileName: `kt-${doc.active}-${slug}-${formatMm(widthMm)}x${formatMm(heightMm)}.png`,
+    fileName: `kt-${activeKind(doc)}-${slug}-${formatMm(widthMm)}x${formatMm(heightMm)}.png`,
     text: `${title}. ${totals.tilesNeeded} tiles, ${totals.boxes} boxes.`,
   };
 }

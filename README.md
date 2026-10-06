@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, finds the walls and floor in it on the device, and selects the one you tap. Still to come: adjusting its corners, laying tiles on it in perspective, editing on the photo, and sharing.
+- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size, and each surface keeps its own design. Still to come: drawing the tiles on the photo in perspective (so far a tile grid shows where they go), editing on the photo, and sharing.
 
 ## Using it
 
@@ -54,11 +54,19 @@ The panel is a bottom sheet on phones: tap a tab to open it, and tap it again to
 - The **Photo** tab shows the current photo, offers another one, and lists the sample photos with their credits.
 
 When a photo opens, the **wall finder** marks the walls (blue), floor (orange) and ceiling (grey) on it. It runs on the device; the first time, it downloads 4–15 MB (depending on the device), which the browser then keeps.
-- Tap a wall or the floor to select it. Its four corners are fitted to it.
-- When one region covers two walls (a corner of the room, say), it doesn't get one forced quad. A starting rectangle is placed around the tap instead.
 - **Show regions** in the Photo tab hides or shows the colours.
 
-Photos stay on the device. They are never uploaded and never saved, so closing the page loses them.
+**Tiling a wall or the floor:**
+1. **Tap it.** It starts with the designer's design and size for that kind of surface. Its four corners are fitted to its region; when one region covers two walls (a corner of the room, say), a starting rectangle goes around the tap instead, with the hint "Drag the corners to this wall's edges".
+2. **Drag the corners** onto the surface's edges. A magnifier shows the photo under the corner, and corners may go beyond the photo's edge (zoom out to reach them). Each drag is one undo step.
+3. **Confirm the real size** in the card below the photo, then **Done**. If the surface's corners can't be seen, the corners can mark **a known rectangle** on it instead, such as a door or a tile: enter its size, and the surface's size is measured from the photo.
+
+The tile grid then appears on the surface in perspective, kept clear of fixtures. Tap another wall or the floor to tile it too; each has its own design.
+- The Design, Tiles, Align and Count tabs change the surface being edited ("Editing Wall in the photo"). A wall can use one series and the floor another.
+- Tap a surface to edit it. The Photo tab lists them, with **Corners** to fit one again and **Remove**.
+- **Designer** shows the surface being edited flat, with "Photo wall:" in the size chip. **Wall** or **Floor** there goes back to the designer's own surfaces.
+
+Photos stay on the device. They are never uploaded and never saved, so closing the page loses them. While a photo has surfaces that haven't been shared, the browser asks before you leave the page.
 
 ## Run and test
 
@@ -358,6 +366,20 @@ Where the brief was ambiguous, these are the choices made.
 54. **Specks are absorbed by their surroundings.** Wall, floor or ceiling patches smaller than 0.2% of the photo take the label around them. So do "other" specks below 0.02%, a limit kept tiny so taps and soap dishes stay in front of the tiles.
 55. **What counts as a surface.** Wall, floor and ceiling are found by name in the model's labels, and a rug counts as floor because it is usually lifted for tiling. Everything else stays in front of the tiles: fixtures, mirrors, doors, furniture. Ceilings are shown, but tapping one explains that only walls and floors are tiled.
 56. **The wall finder runs as soon as a photo opens**, at a working size of 1024 px on the long side. A status at the top shows the download, then "Finding walls and floor…", then a legend. If it fails (offline, say), it says so and offers **Try again**.
+
+**Photo surfaces**
+
+57. **Photo surfaces live in the design document**, beside the designer's wall and floor, so every change to them is undoable. The surface being edited can be one of them. The tabs, the designer and the actions all edit "the surface being edited", so a photo wall has the same Design, Tiles, Align and Count tabs as the designer's wall. Autosave leaves photo surfaces out, because their photo isn't saved.
+58. **A new photo surface copies the designer's design** for its kind: series, bands and alignment, but no single-tile changes, because those belong to the designer's grid. It also starts with the designer's size, which the fit card asks the user to confirm.
+59. **Tapping inside a surface's outline edits it.** Tapping elsewhere adds a surface from the region under the tap, leaving out whatever other surfaces already cover. So a second wall that shares a region with the first still gets its own corners.
+60. **Tiles stay inside the surface's own rectangle**, mapped into the photo. Two walls in one region therefore don't spill into each other, even though they share the same mask. Within the rectangle, the region decides where tiles go, so fixtures stay in front.
+61. **Corners.** Handles can go anywhere, including beyond the photo. While one is dragged, a magnifier shows the photo at three times the current zoom. It sits above the corner when there is room, otherwise in a top corner of the stage clear of the other handles, and never below the finger, where the hand is. Corners that cross over are drawn red, and Done waits until they're fixed. While the card shows, the photo fits above it.
+62. **A known rectangle.** When the surface's corners can't be seen, the corners can mark any rectangle of known size on it, such as a door or a tile.
+    - The surface's size is then measured from the photo: its region's outline (its convex hull, because straight lines stay straight on the plane) is mapped into the rectangle's plane, skipping anything at or beyond the horizon.
+    - The measured size is rounded to 10 mm and can be changed in the size chip afterwards.
+63. **Until the tiles are drawn on the photo** (the next step), a confirmed surface shows its tile grid in perspective, clipped to its region.
+64. **Leaving the page asks first** whenever photo surfaces have changed since they were last shared or downloaded, because photo work is never saved. With no photo surfaces (for example, after undoing them all), it doesn't ask.
+65. **On phones the top bar has two rows in the designer**: Designer | Photo and the actions on the first, the surface and its size on the second. Once Designer | Photo was added, one row left the size chip about 30 px wide.
 
 ## Step 1 checklist
 

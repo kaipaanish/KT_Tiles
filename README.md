@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size, and each surface keeps its own design. Still to come: drawing the tiles on the photo in perspective (so far a tile grid shows where they go), editing on the photo, and sharing.
+- Step 2 is in progress. Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. Still to come: editing on the photo (dragging the pattern, the correction brush), and the before/after slider and sharing.
 
 ## Using it
 
@@ -61,7 +61,7 @@ When a photo opens, the **wall finder** marks the walls (blue), floor (orange) a
 2. **Drag the corners** onto the surface's edges. A magnifier shows the photo under the corner, and corners may go beyond the photo's edge (zoom out to reach them). Each drag is one undo step.
 3. **Confirm the real size** in the card below the photo, then **Done**. If the surface's corners can't be seen, the corners can mark **a known rectangle** on it instead, such as a door or a tile: enter its size, and the surface's size is measured from the photo.
 
-The tile grid then appears on the surface in perspective, kept clear of fixtures. Tap another wall or the floor to tile it too; each has its own design.
+The tiles then appear on the surface in perspective, behind fixtures, keeping the room's light and shadow. **Room lighting** in the Photo tab sets how much (70% to start). Tap another wall or the floor to tile it too; each has its own design.
 - The Design, Tiles, Align and Count tabs change the surface being edited ("Editing Wall in the photo"). A wall can use one series and the floor another.
 - Tap a surface to edit it. The Photo tab lists them, with **Corners** to fit one again and **Remove**.
 - **Designer** shows the surface being edited flat, with "Photo wall:" in the size chip. **Wall** or **Floor** there goes back to the designer's own surfaces.
@@ -125,6 +125,7 @@ A link with any design parameter (`series`, `preset`, `design`, `surface`, `w`, 
 src/engine/    pure layout logic: no DOM or canvas, fully unit tested
 src/designs/   series.json (tiles, series, designs, presets) and texture painters
 src/render/    canvas renderer, texture cache, previews, the shared picture
+src/render/webgl/  the tiles on the photo: mesh, shaders and the WebGL2 compositor
 src/state/     the design document, pure edit actions, store with undo/redo, autosave
 src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs, share
 src/photo/     photo mode: getting the photo, the photo stage, regions, and the perspective maths
@@ -380,6 +381,25 @@ Where the brief was ambiguous, these are the choices made.
 63. **Until the tiles are drawn on the photo** (the next step), a confirmed surface shows its tile grid in perspective, clipped to its region.
 64. **Leaving the page asks first** whenever photo surfaces have changed since they were last shared or downloaded, because photo work is never saved. With no photo surfaces (for example, after undoing them all), it doesn't ask.
 65. **On phones the top bar has two rows in the designer**: Designer | Photo and the actions on the first, the surface and its size on the second. Once Designer | Photo was added, one row left the size chip about 30 px wide.
+
+**Tiles on the photo**
+
+66. **Tiles are drawn with WebGL2, in true perspective.**
+    - Each tile's visible part is a quad in surface millimetres. The vertex shader applies the surface's homography, together with the photo's place on screen, and passes its third component as w.
+    - The GPU therefore interpolates the texture in perspective: grout lines stay straight and converge as the room's own lines do.
+    - There is no 3D engine and no warping of flat triangles.
+67. **They are the designer's tiles and grout.**
+    - The textures come from the designer's cache at full resolution. The GPU makes their mipmaps, and anisotropic filtering, where available, keeps floors sharp into the distance.
+    - Grout is drawn in the fragment shader, in millimetres on the surface. It goes on joints only and is at least a pixel wide, like the designer's grout lines.
+68. **The mask is the surface's region at the working size, feathered by one pixel there** (about 2 photo pixels) and filtered linearly by the GPU. A close-up check along the bathtub's rim showed stair steps without the feather and a clean edge with it.
+69. **Room lighting comes from the photo's own luminance over the surface.**
+    - It is worked out at 256 px and blurred three times with a radius of 5% of that size (about two tiles in a typical photo), so the old tiles and grout don't show through.
+    - The blur is a normalised convolution: only the surface's region counts, so a white WC doesn't brighten the wall beside it.
+    - The result is divided by the region's average, the tiles are multiplied by it, and the slider sets how much (default 70%).
+    - On the sample photo, moving the slider from 0% to 100% changes the brightness of the drawn tiles by up to 50 levels out of 255.
+70. **The tiles are drawn at the screen's pixel ratio** (up to 3×) and again with every zoom and pan. The shared picture, still to come, will be drawn at the photo's own resolution.
+71. **Without WebGL2, the tile grid shows where the tiles go**, and the Photo tab says why. `?webgl=0` forces this, for checks.
+72. **The region colours stay off tiled areas**: they are cut out where tiles are drawn. Otherwise the colour would tint the tiles' soft edges, while untiled walls should still be coloured to invite a tap.
 
 ## Step 1 checklist
 

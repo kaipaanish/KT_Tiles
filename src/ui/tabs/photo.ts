@@ -50,6 +50,7 @@ export function photoTab(ctx: TabContext): HTMLElement {
   );
 
   if (photo) root.append(surfaceList(ctx));
+  if (photo && mode.surfaces.some((s) => s.fit.confirmed)) root.append(lightingSection(mode));
 
   if (photo) {
     const content = h('div', { class: 'photo-found' }, h('p', { class: 'photo-status' }, statusLine(mode)));
@@ -130,6 +131,20 @@ function surfaceList(ctx: TabContext): HTMLElement {
     );
   }
   return section('Tiled surfaces', list, 'Each has its own design: change it in the Design, Tiles, Align and Count tabs.');
+}
+
+/** The Room lighting slider, and a note where tiles can't be drawn. */
+function lightingSection(mode: PhotoMode): HTMLElement {
+  const percentOf = (light: number) => `${Math.round(light * 100)}%`;
+  const value = h('span', { class: 'range-value' }, percentOf(mode.light));
+  const slider = h('input', { type: 'range', min: 0, max: 100, step: 5, value: String(Math.round(mode.light * 100)), 'aria-label': 'Room lighting' });
+  slider.addEventListener('input', () => {
+    mode.setLight(Number(slider.value) / 100);
+    value.textContent = percentOf(mode.light);
+  });
+  const content = h('div', { class: 'range-row' }, h('label', { class: 'field' }, h('span', {}, 'Room lighting'), value), slider);
+  if (!mode.compositor) content.append(h('p', { class: 'tab-hint' }, "This browser can't draw tiles on the photo (WebGL 2 is off), so a grid shows where they go."));
+  return section('Look', content, "How much of the photo's own light and shadow shows on the new tiles.");
 }
 
 /** In photo mode, a line at the top of the other tabs saying what they change. */

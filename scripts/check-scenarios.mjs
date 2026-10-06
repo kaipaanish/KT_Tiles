@@ -736,6 +736,113 @@ export const scenarios = [
     },
   },
   {
+    // Tiles on the photo with WebGL: in perspective, kept off fixtures, with the room's lighting.
+    name: 'photo-tiles',
+    path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      assert(await page.evaluate(() => window.ktDebug.webgl()), 'WebGL2 draws the tiles');
+      const [wall] = await surfacesOf(page);
+      // Points inside the wall's corners: on its region (label 1) and on fixtures (label 0), well away from edges.
+      const points = await page.evaluate((quad) => {
+        const inside = (p) => {
+          let right = 0;
+          for (let i = 0; i < 4; i++) {
+            let a = quad[i];
+            let b = quad[(i + 1) % 4];
+            if (a.y > p.y === b.y > p.y) continue;
+            if (a.y > b.y) [a, b] = [b, a];
+            if (a.x + ((p.y - a.y) / (b.y - a.y)) * (b.x - a.x) > p.x) right++;
+          }
+          return right % 2 === 1;
+        };
+        const xs = quad.map((p) => p.x);
+        const ys = quad.map((p) => p.y);
+        const found = { wall: [], other: [] };
+        for (let y = Math.max(0, Math.min(...ys)); y < Math.min(1536, Math.max(...ys)); y += 24) {
+          for (let x = Math.max(0, Math.min(...xs)); x < Math.min(2048, Math.max(...xs)); x += 24) {
+            const near = [[0, 0], [-16, 0], [16, 0], [0, -16], [0, 16]].map(([dx, dy]) => ({ x: x + dx, y: y + dy }));
+            if (!near.every(inside)) continue;
+            const labels = near.map((p) => window.ktDebug.labelAt(p.x, p.y));
+            if (labels.every((l) => l === 1)) found.wall.push({ x, y });
+            if (labels.every((l) => l === 0)) found.other.push({ x, y });
+          }
+        }
+        return found;
+      }, wall.quad);
+      assert(points.wall.length > 20 && points.other.length > 0, `wall and fixture points inside the corners (${points.wall.length}, ${points.other.length})`);
+      const pixels = (list) => page.evaluate((ps) => ps.map((p) => window.ktDebug.tilePixel(p.x, p.y)), list);
+      const onWall = await pixels(points.wall);
+      const onFixtures = await pixels(points.other);
+      assert(onWall.every((px) => px[3] > 200), 'the tiles cover the wall');
+      assert(onFixtures.every((px) => px[3] < 30), `fixtures stay in front of the tiles (alpha ${Math.max(...onFixtures.map((px) => px[3]))})`);
+      await pause(150);
+      await shot('wall');
+
+      // The Room lighting slider: at 0 the tiles are flat; at 100 they keep the photo's light and shadow.
+      await openTab(page, device, 'Photo');
+      const slider = page.locator('input[aria-label="Room lighting"]');
+      const brightness = (list) => list.map((px) => (px[0] + px[1] + px[2]) / 3);
+      await slider.fill('0');
+      const flat = brightness(await pixels(points.wall));
+      await slider.fill('100');
+      const lit = brightness(await pixels(points.wall));
+      const changed = flat.map((v, i) => Math.abs(lit[i] - v));
+      const spread = (values) => Math.max(...values) - Math.min(...values);
+      console.log(`    room lighting: brightness changes by up to ${Math.round(Math.max(...changed))}; spread across the wall ${Math.round(spread(flat))} at 0% → ${Math.round(spread(lit))} at 100%`);
+      assert(Math.max(...changed) > 10, 'the slider changes the tiles');
+      await slider.fill('70');
+
+      // The floor too, in its own series.
+      await tapLabel(page, device, 2);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 2, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[1]?.confirmed, null, { timeout: 2000 });
+      const floorPoint = await page.evaluate(() => window.ktDebug.labelPoint(2));
+      const [floorPixel] = await pixels([floorPoint]);
+      assert(floorPixel[3] > 200, 'the floor is tiled');
+      await pause(150);
+      await shot('wall-and-floor');
+      if (device === 'desktop') {
+        await slider.fill('0');
+        await pause(100);
+        await shot('lighting-0');
+        await slider.fill('100');
+        await pause(100);
+        await shot('lighting-100');
+        await page.evaluate(() => window.ktDebug.photoZoom(700, 600, 3));
+        await pause(150);
+        await shot('grout-close-up');
+        // Where the tiles meet the bathtub's rim: a soft edge, no stair steps.
+        await page.evaluate(() => window.ktDebug.photoZoom(720, 1000, 4));
+        await pause(150);
+        await shot('rim-close-up');
+      }
+    },
+  },
+  {
+    // Without WebGL2 (forced here) a grid shows where the tiles go.
+    name: 'photo-no-webgl',
+    devices: ['desktop'],
+    path: './?debug=1&view=photo&webgl=0&segmenter=fake&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      assert(!(await page.evaluate(() => window.ktDebug.webgl())), 'WebGL is off');
+      await openTab(page, device, 'Photo');
+      assert(await page.locator('.tab-photo :text("WebGL 2 is off")').isVisible(), 'the Photo tab says why there is a grid');
+      await pause(100);
+      await shot('grid');
+    },
+  },
+  {
     // The corners can mark any rectangle of known size; the surface is then measured from the photo.
     // The fake segmenter gives a plain room, so the wall's corners are fitted to its whole region.
     name: 'photo-rectangle',

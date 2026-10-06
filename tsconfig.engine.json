@@ -1,6 +1,6 @@
 {
-  // Type-checks the layout engine, the pure photo maths and the segmentation clean-up without the DOM library,
-  // so any use of document, window or canvas there fails the build.
+  // Type-checks the layout engine, the pure photo maths, the segmentation clean-up and the tile
+  // mesh without the DOM library, so any use of document, window or canvas there fails the build.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022"],
@@ -11,6 +11,9 @@
     "src/photo/homography.ts",
     "src/photo/maskToQuad.ts",
     "src/photo/pointer.ts",
+    "src/photo/fit.ts",
+    "src/photo/shading.ts",
+    "src/render/webgl/mesh.ts",
     "src/segment/segmenter.ts",
     "src/segment/classes.ts",
     "src/segment/postprocess.ts",

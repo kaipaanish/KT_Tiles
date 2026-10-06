@@ -1,7 +1,9 @@
 import samples from 'virtual:samples';
-import { layoutSurface, type Catalog } from '../engine';
+import { layoutSurface, type Catalog, type LayoutResult } from '../engine';
+import { TileCompositor, type Plane, type SurfaceScene } from '../render/webgl/compositor';
+import type { TextureCache } from '../render/textureCache';
 import { FakeSegmenter } from '../segment/fakeSegmenter';
-import { labelMask } from '../segment/postprocess';
+import { featherMask, labelMask, resizeArea } from '../segment/postprocess';
 import type { Backend } from '../segment/segformer';
 import { CEILING, FLOOR, WALL, type RGBAImage, type Segmentation, type Segmenter } from '../segment/segmenter';
 import { WorkerSegmenter } from '../segment/workerSegmenter';
@@ -18,9 +20,14 @@ import { drawLoupe } from './loupe';
 import { convexHull, fitQuad, regionAt, rowExtremes, type Mask } from './maskToQuad';
 import { PhotoView, type PhotoTransform, type Sample } from './photoView';
 import { cssColour, labelShares, paintMask, paintRegions, REGION_STYLES, styleFor } from './regions';
+import { shadingMap } from './shading';
 
 /** Segmentation and masks work on the photo at up to this many pixels on its long side. */
 export const WORK_SIDE = 1024;
+/** The room's lighting is worked out at this size: after the heavy blur, more would add nothing. */
+const SHADING_SIDE = 256;
+/** Blur radius for the lighting, as a share of SHADING_SIDE: about two tiles in a typical photo. */
+const SHADING_BLUR = 0.05;
 
 export type SegmentStatus =
   | { state: 'idle' }
@@ -34,6 +41,8 @@ export interface PhotoModeOptions {
   segmenter: 'model' | 'fake';
   backend: Backend;
   edges: 'guided' | 'bilinear';
+  /** False skips WebGL (?webgl=0): the tile grid shows instead of tiles, as where WebGL2 is missing. */
+  webgl: boolean;
 }
 
 export interface PhotoModeHooks {
@@ -54,9 +63,15 @@ interface SurfaceView {
   region: Mask | null;
   /** The region, tinted, for highlighting. */
   tint: HTMLCanvasElement | null;
-  /** The region as an alpha mask, for clipping the grid. */
+  /** The region as an alpha mask, for clipping the grid and the region colours. */
   clip: HTMLCanvasElement | null;
-  /** Every placed tile's visible part, in photo pixels. */
+  /** The region for the GPU: 255 where tiles go. */
+  mask: Plane | null;
+  /** The room's lighting over the region. */
+  shading: Plane | null;
+  /** The laid-out tiles, once the surface is confirmed. */
+  result: LayoutResult | null;
+  /** Every placed tile's visible part, in photo pixels (the grid shown without WebGL). */
   grid: Pt[][];
 }
 
@@ -80,6 +95,32 @@ function workingImage(photo: Photo): RGBAImage {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(photo.canvas, 0, 0, width, height);
   return { width, height, data: ctx.getImageData(0, 0, width, height).data };
+}
+
+/** The photo at SHADING_SIDE on its long side. */
+function smallImage(photo: Photo): RGBAImage {
+  const scale = Math.min(1, SHADING_SIDE / Math.max(photo.width, photo.height));
+  const width = Math.max(1, Math.round(photo.width * scale));
+  const height = Math.max(1, Math.round(photo.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Canvas 2D is not available');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(photo.canvas, 0, 0, width, height);
+  return { width, height, data: ctx.getImageData(0, 0, width, height).data };
+}
+
+/** The room's lighting over a region, from the small photo. */
+function roomLighting(small: RGBAImage, region: Mask): Plane {
+  // The region's coverage of each small pixel (it is at the working size, four times bigger).
+  const data = new Uint8ClampedArray(region.width * region.height * 4);
+  for (let i = 0; i < region.data.length; i++) data[i * 4] = region.data[i] ? 255 : 0;
+  const shrunk = resizeArea({ width: region.width, height: region.height, data }, small.width, small.height);
+  const coverage = new Float32Array(small.width * small.height);
+  for (let i = 0; i < coverage.length; i++) coverage[i] = shrunk.data[i * 4]! / 255;
+  return shadingMap(small, coverage, Math.max(2, Math.round(SHADING_BLUR * SHADING_SIDE)));
 }
 
 /** A white-on-transparent mask canvas, for clipping drawings to a region with 'destination-in'. */
@@ -106,7 +147,14 @@ export class PhotoMode {
   readonly samples: readonly Sample[] = samples;
   status: SegmentStatus = { state: 'idle' };
   showRegions = true;
+  /** How much of the room's light and shadow shows on the tiles (the Room lighting slider). */
+  light = 0.7;
+  /** Null where WebGL2 isn't available (or with ?webgl=0). */
+  readonly compositor: TileCompositor | null;
   private regions: HTMLCanvasElement | null = null;
+  /** The photo at SHADING_SIDE, for the lighting. */
+  private small: RGBAImage | null = null;
+  private regionScratch: HTMLCanvasElement | null = null;
   private segmenter: Segmenter | null = null;
   private doc: DesignDoc;
   private readonly views = new Map<string, SurfaceView>();
@@ -120,6 +168,7 @@ export class PhotoMode {
     stage: HTMLElement,
     private readonly store: Store,
     private readonly catalog: Catalog,
+    textures: TextureCache,
     private readonly hooks: PhotoModeHooks,
     private readonly options: PhotoModeOptions,
   ) {
@@ -140,6 +189,13 @@ export class PhotoMode {
       },
     });
     this.view.el.append(this.top, this.card.el);
+    const compositor = options.webgl ? new TileCompositor(textures) : null;
+    this.compositor = compositor?.available ? compositor : null;
+    if (this.compositor) {
+      this.view.layers.append(this.compositor.canvas);
+      this.compositor.onRestored = () => this.view.requestDraw();
+    }
+    this.view.onFrame = () => this.renderTiles();
     // While the card shows, the photo fits above it, so no corner hides behind it.
     new ResizeObserver(() => this.view.setBottomInset(this.card.el.hidden ? 0 : this.card.el.offsetHeight + 24)).observe(this.card.el);
     this.view.interaction = {
@@ -199,6 +255,20 @@ export class PhotoMode {
     if (this.photo) void this.segment(this.photo);
   }
 
+  /** The Room lighting slider: redraws without rebuilding the panel, so the slider keeps its drag. */
+  setLight(light: number): void {
+    this.light = Math.min(1, Math.max(0, light));
+    this.view.requestDraw();
+  }
+
+  /** What the tiles look like at a photo pixel (premultiplied RGBA), drawn now; for the browser check. */
+  tilePixel(x: number, y: number): [number, number, number, number] | null {
+    const t = this.view.view;
+    if (!this.compositor || !t) return null;
+    this.renderTiles();
+    return this.compositor.readPixel(t.x + x * t.scale, t.y + y * t.scale, this.view.size.dpr);
+  }
+
   setShowRegions(show: boolean): void {
     this.showRegions = show;
     this.view.requestDraw();
@@ -224,6 +294,7 @@ export class PhotoMode {
     }
     this.photo = photo;
     this.regions = null;
+    this.small = smallImage(photo);
     this.views.clear();
     // Surfaces belong to their photo; another photo starts with none.
     this.store.commit((d) => act.keepPhotoSurfaces(d, photo.id));
@@ -274,6 +345,8 @@ export class PhotoMode {
     let region = sameRegion ? cached.region : null;
     let tint = sameRegion ? cached.tint : null;
     let clip = sameRegion ? cached.clip : null;
+    let mask = sameRegion ? cached.mask : null;
+    let shading = sameRegion ? cached.shading : null;
     if (!sameRegion && segmentation && this.photo) {
       const label = plan.layout.surface === 'wall' ? WALL : FLOOR;
       const sx = segmentation.width / this.photo.width;
@@ -283,11 +356,16 @@ export class PhotoMode {
       // Light, so the wall's own edges stay visible while its corners are placed.
       tint = region && paintMask(region.width, region.height, (i) => (region!.data[i] ? style : undefined), 0.6);
       clip = region && alphaCanvas(region);
+      // Feathered by a pixel of the working size (about 2 photo pixels), then filtered linearly by the GPU.
+      mask = region && { width: region.width, height: region.height, data: featherMask(region.data, region.width, region.height, 1) };
+      shading = region && this.small && roomLighting(this.small, region);
     }
     let grid: Pt[][] = [];
+    let result: LayoutResult | null = null;
     if (toPhoto && surface.fit.confirmed) {
       try {
-        const result = layoutSurface(plan.surface, plan.layout, plan.alignment, plan.overrides, this.catalog);
+        // Only the plan matters to the layout: reuse it while just the corners change.
+        result = cached && cached.surface.plan === plan && cached.result ? cached.result : layoutSurface(plan.surface, plan.layout, plan.alignment, plan.overrides, this.catalog);
         grid = result.pieces.map(({ visibleRect: r }) =>
           [
             { x: r.x, y: r.y },
@@ -300,7 +378,7 @@ export class PhotoMode {
         console.warn('Could not lay out the photo surface', error);
       }
     }
-    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, tint, clip, grid };
+    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, tint, clip, mask, shading, result, grid };
     this.views.set(surface.id, view);
     return view;
   }
@@ -528,18 +606,17 @@ export class PhotoMode {
     const height = photo.height * t.scale;
     const toScreen = (p: Pt) => ({ x: t.x + p.x * t.scale, y: t.y + p.y * t.scale });
     const active = this.activeSurface();
+    const tiled = this.compositor ? this.surfaces.filter((s) => s.fit.confirmed).map((s) => this.surfaceView(s)) : [];
     ctx.imageSmoothingEnabled = true;
-    if (this.regions && this.showRegions) {
-      ctx.globalAlpha = active ? 0.3 : 1;
-      ctx.drawImage(this.regions, t.x, t.y, width, height);
-      ctx.globalAlpha = 1;
-    }
+    if (this.regions && this.showRegions) this.drawRegions(ctx, t, frame, width, height, active ? 0.3 : 1, tiled);
     for (const surface of this.surfaces) {
       const view = this.surfaceView(surface);
       const isActive = surface === active;
       const fitting = isActive && !surface.fit.confirmed;
       if (fitting && view.tint) ctx.drawImage(view.tint, t.x, t.y, width, height);
-      if (view.grid.length > 0) this.drawGrid(ctx, view, t, frame, width, height);
+      // Without WebGL the grid shows where the tiles go; with it, the tiles speak for themselves.
+      if (!this.compositor && view.grid.length > 0) this.drawGrid(ctx, view, t, frame, width, height);
+      if (this.compositor && surface.fit.confirmed && !isActive) continue;
       const outline = fitting ? surface.fit.quad : view.outline;
       if (!outline) continue;
       const valid = isConvexQuad(surface.fit.quad);
@@ -562,6 +639,70 @@ export class PhotoMode {
     const drag = this.drag;
     const dragged = drag && photoSurface(this.doc, drag.id);
     if (drag && dragged) drawLoupe(ctx, photo, t, frame, dragged.fit.quad, drag.corner);
+  }
+
+  /** The region colours, except where tiles are drawn (they would tint the tiles' soft edges). */
+  private drawRegions(ctx: CanvasRenderingContext2D, t: PhotoTransform, frame: { width: number; height: number }, width: number, height: number, alpha: number, tiled: SurfaceView[]): void {
+    if (!this.regions) return;
+    const cut = tiled.filter((view) => view.clip);
+    if (cut.length === 0) {
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(this.regions, t.x, t.y, width, height);
+      ctx.globalAlpha = 1;
+      return;
+    }
+    const scratch = (this.regionScratch ??= document.createElement('canvas'));
+    const dpr = ctx.getTransform().a;
+    if (scratch.width !== Math.round(frame.width * dpr) || scratch.height !== Math.round(frame.height * dpr)) {
+      scratch.width = Math.round(frame.width * dpr);
+      scratch.height = Math.round(frame.height * dpr);
+    }
+    const g = scratch.getContext('2d');
+    if (!g) return;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, frame.width, frame.height);
+    g.imageSmoothingEnabled = true;
+    g.drawImage(this.regions, t.x, t.y, width, height);
+    g.globalCompositeOperation = 'destination-out';
+    for (const view of cut) g.drawImage(view.clip!, t.x, t.y, width, height);
+    g.globalCompositeOperation = 'source-over';
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(scratch, 0, 0);
+    ctx.restore();
+  }
+
+  /** The confirmed surfaces' tiles, drawn by the GPU on its own canvas under the overlay. */
+  private renderTiles(): void {
+    const compositor = this.compositor;
+    if (!compositor) return;
+    const photo = this.photo;
+    const t = this.view.view;
+    const frame = this.view.size;
+    const scenes: SurfaceScene[] = [];
+    if (photo && t) {
+      for (const surface of this.surfaces) {
+        if (!surface.fit.confirmed) continue;
+        const view = this.surfaceView(surface);
+        if (!view.toPhoto || !view.result || !view.mask || !view.shading) continue;
+        const { widthMm, heightMm } = surface.plan.surface;
+        scenes.push({ id: surface.id, result: view.result, toPhoto: view.toPhoto, inside: { x: widthMm / 2, y: heightMm / 2 }, mask: view.mask, shading: view.shading });
+      }
+    }
+    compositor.render(
+      {
+        width: frame.width,
+        height: frame.height,
+        dpr: frame.dpr,
+        view: t ?? { scale: 1, x: 0, y: 0 },
+        photo: photo ?? { width: 1, height: 1 },
+        light: this.light,
+        groutMm: this.doc.settings.groutMm,
+        groutColor: this.doc.settings.groutColor,
+      },
+      scenes,
+    );
   }
 
   /** The tiles' edges in perspective, only where the surface's region is (fixtures stay clear). */

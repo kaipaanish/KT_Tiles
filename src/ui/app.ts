@@ -170,6 +170,7 @@ export function startApp(root: HTMLElement): void {
     // A real tile image has loaded: redraw, and redraw previews made from its placeholder.
     clearThumbs();
     canvas.requestDraw();
+    photoMode.view.requestDraw();
     sheetTab = null;
     scheduleSheet();
   });
@@ -206,6 +207,7 @@ export function startApp(root: HTMLElement): void {
     stage,
     store,
     catalog,
+    textures,
     {
       changed: () => {
         sheetTab = null;
@@ -215,10 +217,11 @@ export function startApp(root: HTMLElement): void {
     },
     {
       // For checks and comparisons: ?segmenter=fake skips the model, ?backend=wasm skips the GPU,
-      // ?edges=bilinear turns off the photo-guided edges.
+      // ?edges=bilinear turns off the photo-guided edges, ?webgl=0 shows the tile grid instead of tiles.
       segmenter: params.get('segmenter') === 'fake' ? 'fake' : 'model',
       backend: params.get('backend') === 'wasm' ? 'wasm' : 'webgpu',
       edges: params.get('edges') === 'bilinear' ? 'bilinear' : 'guided',
+      webgl: params.get('webgl') !== '0',
     },
   );
 
@@ -563,6 +566,18 @@ export function startApp(root: HTMLElement): void {
         for (let i = 1; i < depth.length; i++) if (depth[i]! > depth[best]!) best = i;
         return { x: ((best % width) + 0.5) * (photo.width / width), y: (Math.floor(best / width) + 0.5) * (photo.height / height), depth: depth[best] };
       },
+      /** The segmentation label at a photo pixel: 0 other, 1 wall, 2 floor, 3 ceiling. */
+      labelAt: (x: number, y: number) => {
+        const segmentation = photoMode.segmentation;
+        const photo = photoMode.photo;
+        if (!segmentation || !photo) return null;
+        const sx = Math.floor((x * segmentation.width) / photo.width);
+        const sy = Math.floor((y * segmentation.height) / photo.height);
+        return segmentation.labels[sy * segmentation.width + sx] ?? null;
+      },
+      /** The tiles drawn at a photo pixel (premultiplied RGBA), or null without WebGL. */
+      tilePixel: (x: number, y: number) => photoMode.tilePixel(x, y),
+      webgl: () => !!photoMode.compositor,
       /** Zooms the photo to zoom × its fitted size around a photo pixel. */
       photoZoom: (x: number, y: number, zoom: number) => photoMode.view.zoomTo({ x, y }, zoom),
       /** A photo pixel in page coordinates. */

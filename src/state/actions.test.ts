@@ -15,6 +15,7 @@ import {
   paintStroke,
   removeBand,
   removePhotoSurface,
+  setTileCover,
   resetTiles,
   rotateCell,
   RotationError,
@@ -240,6 +241,10 @@ describe('photo surfaces', () => {
     // Single-tile changes belong to the designer's grid, so they stay behind.
     expect(surface.plan.overrides).toEqual({});
     expect(surface.fit).toMatchObject({ marks: 'surface', confirmed: false, starter: false });
+    expect(surface.cover).toBe('auto');
+    const chosen = setTileCover(doc, 'photo-1', 'corners');
+    expect(chosen.photo[0]!.cover).toBe('corners');
+    expect(setTileCover(chosen, 'photo-1', 'corners')).toBe(chosen);
   });
 
   it("edit only themselves: the designer's wall stays as it was", () => {

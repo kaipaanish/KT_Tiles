@@ -64,6 +64,7 @@ When a photo opens, the **wall finder** marks the walls (blue), floor (orange) a
 The tiles then appear on the surface in perspective, behind fixtures, keeping the room's light and shadow. **Room lighting** in the Photo tab sets how much (70% to start). Tap another wall or the floor to tile it too; each has its own design.
 - The Design, Tiles, Align and Count tabs change the surface being edited ("Editing Wall in the photo"). A wall can use one series and the floor another.
 - Tap a surface to edit it. The Photo tab lists them, with **Corners** to fit one again and **Remove**.
+- **Tiles cover**, in the Photo tab, sets where the tiles go inside the corners. **Where the wall is** follows the wall finder, so fixtures stay in front. **Inside the corners** fills them. **Automatic** (the default) uses the wall finder unless it found less than 40% of the area inside the corners, as when it takes a plain wall for a door; then the tiles fill your corners, and a message says so.
 - **Designer** shows the surface being edited flat, with "Photo wall:" in the size chip. **Wall** or **Floor** there goes back to the designer's own surfaces.
 
 **Editing on the photo:** with a tiled surface selected, a bar under the photo offers three tools.
@@ -382,7 +383,7 @@ Where the brief was ambiguous, these are the choices made.
 57. **Photo surfaces live in the design document**, beside the designer's wall and floor, so every change to them is undoable. The surface being edited can be one of them. The tabs, the designer and the actions all edit "the surface being edited", so a photo wall has the same Design, Tiles, Align and Count tabs as the designer's wall. Autosave leaves photo surfaces out, because their photo isn't saved.
 58. **A new photo surface copies the designer's design** for its kind: series, bands and alignment, but no single-tile changes, because those belong to the designer's grid. It also starts with the designer's size, which the fit card asks the user to confirm.
 59. **Tapping inside a surface's outline edits it.** Tapping elsewhere adds a surface from the region under the tap, leaving out whatever other surfaces already cover. So a second wall that shares a region with the first still gets its own corners.
-60. **Tiles stay inside the surface's own rectangle**, mapped into the photo. Two walls in one region therefore don't spill into each other, even though they share the same mask. Within the rectangle, the region decides where tiles go, so fixtures stay in front.
+60. **Tiles stay inside the surface's own rectangle**, mapped into the photo. Two walls in one region therefore don't spill into each other, even though they share the same mask. Within the rectangle, the tiles go where the wall finder found that kind of surface, so fixtures stay in front (see decision 83).
 61. **Corners.** Handles can go anywhere, including beyond the photo. While one is dragged, a magnifier shows the photo at three times the current zoom. It sits above the corner when there is room, otherwise in a top corner of the stage clear of the other handles, and never below the finger, where the hand is. Corners that cross over are drawn red, and Done waits until they're fixed. While the card shows, the photo fits above it.
 62. **A known rectangle.** When the surface's corners can't be seen, the corners can mark any rectangle of known size on it, such as a door or a tile.
     - The surface's size is then measured from the photo: its region's outline (its convex hull, because straight lines stay straight on the plane) is mapped into the rectangle's plane, skipping anything at or beyond the horizon.
@@ -440,6 +441,14 @@ Where the brief was ambiguous, these are the choices made.
     - With nothing tiled yet, Share explains what to do first.
 81. **No photo is uploaded, and a check proves it.** `photo-network` records every request in a whole session: a photo from the gallery, the wall finder, tiling a wall and sharing. It expects only GETs without bodies, to the site itself, Hugging Face (the model) and jsDelivr (the libraries). On the last run that was 5, 3 and 3 requests.
 82. **Touch drags on page controls cancel `touchstart`, as the canvas does** (decision 29). Otherwise Chrome takes the drag for its own gesture and swallows the next tap's click. After the before/after line had been dragged, its button wouldn't turn off. The browser check found this on the phone.
+
+**Corners over the wall finder**
+
+83. **Your corners win when the wall finder disagrees with them.** On a real photo the finder labelled most of a plain grey wall as something else (probably a door, from its frame and number sign). The tiles used to follow the finder's area, so they only filled a thin strip of the corners.
+    - Inside the corners, the tiles now go wherever the finder found that kind of surface. That counts all of it, not only the patch connected to the tap.
+    - If the finder found less than 40% of the area inside the corners, it has most likely missed the surface, so the tiles fill the corners. A message suggests Remove for anything in front.
+    - **Tiles cover** in the Photo tab overrides this either way, and is undoable. Room lighting is worked out over the same area.
+    - On the sample bathroom the finder found most of the wall, so the bathtub still stays in front. Browser check `photo-cover` recreates the disagreement, and `photo-tiles` covers the normal case.
 
 ## Step 1 checklist
 

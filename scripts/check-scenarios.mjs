@@ -819,6 +819,7 @@ export const scenarios = [
       const onWall = await pixels(points.wall);
       const onFixtures = await pixels(points.other);
       assert(onWall.every((px) => px[3] > 200), 'the tiles cover the wall');
+      assert((await surfacesOf(page))[0].coverInfo.cover === 'found', 'on a wall the finder found, automatic keeps fixtures in front');
       assert(onFixtures.every((px) => px[3] < 30), `fixtures stay in front of the tiles (alpha ${Math.max(...onFixtures.map((px) => px[3]))})`);
       await pause(150);
       await shot('wall');
@@ -941,6 +942,56 @@ export const scenarios = [
       assert(await page.locator('.tab-photo button:has-text("Clear brush changes")').isVisible(), 'brush changes can be cleared');
       await pause(150);
       await shot('grid');
+    },
+  },
+  {
+    // Corners on a wall the wall finder missed (it took it for something else): the tiles fill the
+    // corners rather than the finder's sliver, and the Photo tab can switch between the two.
+    // The fake segmenter's plain room makes this repeatable: the corners go onto its "floor".
+    name: 'photo-cover',
+    path: './?debug=1&view=photo&segmenter=fake&sample=old-bathroom-subway-tiles.jpg',
+    async run(page, { device, shot }) {
+      await segmented(page, 'Old bathroom with subway tiles');
+      await tapLabel(page, device, 1);
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 3000 });
+      const input = await pointer(page, device);
+      // Bottom corners first, then the top ones, so the corners never cross.
+      const targets = [
+        [0, { x: 300, y: 1480 }],
+        [1, { x: 1700, y: 1480 }],
+        [3, { x: 300, y: 1260 }],
+        [2, { x: 1700, y: 1260 }],
+      ];
+      for (const [corner, target] of targets) {
+        const quad = (await surfacesOf(page))[0].quad;
+        const from = await photoScreen(page, quad[corner].x, quad[corner].y);
+        const to = await photoScreen(page, target.x, target.y);
+        await input.down(from);
+        await input.move(to, 6);
+        await input.up();
+        await pause(60);
+      }
+      const [moved] = await surfacesOf(page);
+      assert(moved.quad.every((q, i) => Math.hypot(q.x - targets.find(([c]) => c === i)[1].x, q.y - targets.find(([c]) => c === i)[1].y) < 6), `the corners moved: ${JSON.stringify(moved.quad)}`);
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 2000 });
+      await page.locator('.toast:has-text("so the tiles fill your corners")').waitFor({ state: 'visible', timeout: 3000 });
+      const [wall] = await surfacesOf(page);
+      assert(wall.tileCover === 'auto' && wall.coverInfo.cover === 'corners' && wall.coverInfo.found < 0.05, `automatic fill: ${JSON.stringify(wall.coverInfo)}`);
+      const inside = { x: 1000, y: 1370 };
+      assert((await alphaAt(page, inside)) > 200, 'tiles fill the corners');
+      await pause(150);
+      await shot('fills-corners');
+
+      // "Where the wall is" goes back to the wall finder's area (none of it here); Automatic fills again.
+      await openTab(page, device, 'Photo');
+      await press(page, device, '.cover-choice button:has-text("Where the wall is")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.tileCover === 'found', null, { timeout: 2000 });
+      assert((await alphaAt(page, inside)) < 30, 'only where the wall finder found the wall');
+      await press(page, device, '.cover-choice button:has-text("Automatic")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.tileCover === 'auto', null, { timeout: 2000 });
+      assert((await alphaAt(page, inside)) > 200, 'automatic fills the corners again');
+      assert((await page.locator('.tab-photo .tab-hint:has-text("found only")').count()) === 1, 'the tab explains the automatic choice');
     },
   },
   {

@@ -540,6 +540,8 @@ export function startApp(root: HTMLElement): void {
           active: store.get().doc.active === s.id,
           alignment: s.plan.alignment,
           strokes: s.strokes.length,
+          tileCover: s.cover,
+          coverInfo: photoMode.coverInfo(s.id),
           ...s.fit,
         })),
       /** A point on a photo surface (mm) in photo pixels. */

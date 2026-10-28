@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { insidePolygon, isConvexQuad, markedRect, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline } from './fit';
+import { FOUND_SHARE_MIN, insidePolygon, isConvexQuad, markedRect, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline, tileArea } from './fit';
 import { apply, rectCorners, surfaceToPhoto, type Pt, type Quad } from './homography';
 
 // A 2400 × 2700 mm wall photographed at an angle (the right side further away).
@@ -86,5 +86,34 @@ describe('rasterPolygon', () => {
     let mismatches = 0;
     for (let y = 0; y < 150; y++) for (let x = 0; x < 200; x++) if (mask[y * 200 + x] !== (insidePolygon(quad, { x: x + 0.5, y: y + 0.5 }) ? 1 : 0)) mismatches++;
     expect(mismatches).toBe(0);
+  });
+});
+
+describe('where the tiles go', () => {
+  // 10 × 4 pixels, all inside the corners. Labels: 1 = wall, 0 = something else.
+  const inside = new Uint8Array(40).fill(1);
+  const labels = (wallShare: number) => Uint8Array.from({ length: 40 }, (_, i) => (i < Math.round(40 * wallShare) ? 1 : 0));
+  const count = (area: Uint8Array) => area.reduce((a, b) => a + b, 0);
+
+  it('keeps fixtures in front where the wall finder found most of the wall', () => {
+    const result = tileArea(labels(0.8), 1, inside, 'auto');
+    expect(result.cover).toBe('found');
+    expect(result.found).toBeCloseTo(0.8, 6);
+    expect(count(result.area)).toBe(32);
+  });
+
+  it("trusts the corners where the wall finder found too little of what's inside them", () => {
+    // A plain wall taken for a door: the finder found a sliver of it.
+    const result = tileArea(labels(0.05), 1, inside, 'auto');
+    expect(result.cover).toBe('corners');
+    expect(count(result.area)).toBe(40);
+    expect(tileArea(labels(FOUND_SHARE_MIN), 1, inside, 'auto').cover).toBe('found');
+  });
+
+  it('follows an explicit choice either way, and never goes outside the corners', () => {
+    expect(count(tileArea(labels(0.05), 1, inside, 'found').area)).toBe(2);
+    expect(count(tileArea(labels(0.9), 1, inside, 'corners').area)).toBe(40);
+    const half = Uint8Array.from({ length: 40 }, (_, i) => (i < 20 ? 1 : 0));
+    expect(count(tileArea(labels(1), 1, half, 'corners').area)).toBe(20);
   });
 });

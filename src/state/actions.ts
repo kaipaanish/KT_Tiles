@@ -41,6 +41,7 @@ import {
   type Settings,
   type SurfacePlan,
   type SurfaceRef,
+  type TileCover,
   type WallLayout,
 } from './document';
 
@@ -418,7 +419,7 @@ export function addPhotoSurface(doc: DesignDoc, input: NewPhotoSurface): DesignD
     confirmed: false,
     starter: input.starter,
   };
-  return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit, strokes: [] }] };
+  return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit, strokes: [], cover: 'auto' as const }] };
 }
 
 export function setPhotoFit(doc: DesignDoc, id: PhotoSurfaceId, patch: Partial<PhotoFit>): DesignDoc {
@@ -466,6 +467,13 @@ export function paintStroke(doc: DesignDoc, id: PhotoSurfaceId, stroke: BrushStr
   const last = surface.strokes[surface.strokes.length - 1];
   const strokes = last && last.id === stroke.id ? [...surface.strokes.slice(0, -1), stroke] : [...surface.strokes, stroke];
   return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, strokes } : s)) };
+}
+
+/** Where a surface's tiles go inside its corners (see TileCover). */
+export function setTileCover(doc: DesignDoc, id: PhotoSurfaceId, cover: TileCover): DesignDoc {
+  const surface = photoSurface(doc, id);
+  if (!surface || surface.cover === cover) return doc;
+  return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, cover } : s)) };
 }
 
 /** Takes away every brush correction on a surface. */

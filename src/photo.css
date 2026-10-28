@@ -538,3 +538,21 @@
 .compare-label.is-after {
   left: calc(var(--split, 50%) + 12px);
 }
+
+.field-label {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cover-choice {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  border-radius: 14px;
+}
+
+.cover-choice .segment {
+  min-height: 32px;
+  font-size: 13px;
+}

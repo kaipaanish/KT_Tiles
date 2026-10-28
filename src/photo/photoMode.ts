@@ -9,14 +9,14 @@ import type { Backend } from '../segment/segformer';
 import { CEILING, FLOOR, WALL, type RGBAImage, type Segmentation, type Segmenter } from '../segment/segmenter';
 import { WorkerSegmenter } from '../segment/workerSegmenter';
 import * as act from '../state/actions';
-import { photoSurface, photoSurfaceName, type DesignDoc, type PhotoSurface } from '../state/document';
+import { photoSurface, photoSurfaceName, type DesignDoc, type PhotoSurface, type TileCover } from '../state/document';
 import type { Store } from '../state/store';
 import { h } from '../ui/dom';
 import { MAGNET_PX, type Drag, type PointerPoint } from '../ui/gestures';
 import { applyStrokes } from './brush';
 import { CompareSlider } from './compare';
 import { loadPhoto, loadPhotoFromUrl, pickPhotoFile, type Photo } from './capture';
-import { insidePolygon, isConvexQuad, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline } from './fit';
+import { insidePolygon, isConvexQuad, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline, tileArea } from './fit';
 import { FitCard } from './fitCard';
 import { apply, invert, type Mat3, type Pt, type Quad } from './homography';
 import { drawLoupe } from './loupe';
@@ -66,7 +66,14 @@ interface SurfaceView {
   outline: Quad | null;
   /** Its segmentation region, at the working size. */
   region: Mask | null;
-  /** The region with the brush strokes applied: where tiles go. */
+  /** Where tiles go before the brush, once tiled: see tileArea. */
+  area: Mask | null;
+  /** What the area was worked out from (cover and corners), to keep it while they stay put. */
+  areaKey: string;
+  /** How much of the inside of the corners the wall finder found (0–1), and what the cover came to. */
+  found: number;
+  cover: 'found' | 'corners' | null;
+  /** The area with the brush strokes applied: where tiles go. */
   edited: Mask | null;
   /** The region, tinted, for highlighting. */
   tint: HTMLCanvasElement | null;
@@ -368,6 +375,19 @@ export class PhotoMode {
     this.hooks.changed();
   }
 
+  /** Where a surface's tiles go inside its corners (one undo step). */
+  setTileCover(id: PhotoSurface['id'], cover: TileCover): void {
+    this.store.commit((d) => act.setTileCover(d, id, cover));
+  }
+
+  /** For a tiled surface: its setting, what that came to, and how much of the inside the wall finder found. */
+  coverInfo(id: PhotoSurface['id']): { setting: TileCover; cover: 'found' | 'corners'; found: number } | null {
+    const surface = photoSurface(this.doc, id);
+    if (!surface || !surface.fit.confirmed) return null;
+    const view = this.surfaceView(surface);
+    return view.cover ? { setting: surface.cover, cover: view.cover, found: view.found } : null;
+  }
+
   /** Takes away a surface's brush corrections (one undo step). */
   clearBrush(id: PhotoSurface['id']): void {
     this.store.commit((d) => act.clearStrokes(d, id));
@@ -459,15 +479,39 @@ export class PhotoMode {
       // Light, so the wall's own edges stay visible while its corners are placed.
       tint = paintMask(region.width, region.height, (i) => (region!.data[i] ? style : undefined), 0.6);
     }
-    let shading = sameRegion ? cached.shading : null;
-    if (!fitting && !shading && region && this.small) shading = roomLighting(this.small, region);
+    // Once tiled, the tiles go inside the corners: where the wall finder found this kind of surface,
+    // or everywhere inside them when it found too little to trust (or the user says so).
+    let area: Mask | null = null;
+    let found = 0;
+    let cover: 'found' | 'corners' | null = null;
+    const areaKey = outline ? `${surface.cover}|${outline.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(';')}` : '';
+    if (!fitting && segmentation && this.photo && outline) {
+      if (cached && cached.segmentation === segmentation && cached.areaKey === areaKey && cached.area) {
+        ({ area, found, cover } = cached);
+      } else {
+        const sx = segmentation.width / this.photo.width;
+        const sy = segmentation.height / this.photo.height;
+        const inside = rasterPolygon(
+          outline.map((q) => ({ x: q.x * sx, y: q.y * sy })),
+          segmentation.width,
+          segmentation.height,
+        );
+        const result = tileArea(segmentation.labels, label, inside, surface.cover);
+        area = { width: segmentation.width, height: segmentation.height, data: result.area };
+        found = result.found;
+        cover = result.cover;
+      }
+    }
+    const sameArea = !!cached && !!area && cached.area === area;
+    let shading = sameArea ? cached!.shading : null;
+    if (!fitting && !shading && area && this.small) shading = roomLighting(this.small, area);
     // Brush strokes change only where the tiles go.
-    const sameEdits = sameRegion && cached.surface.strokes === surface.strokes;
-    let edited = sameEdits ? cached.edited : null;
-    let clip = sameEdits ? cached.clip : null;
-    let mask = sameEdits ? cached.mask : null;
-    if (!fitting && !edited && region && this.photo) {
-      edited = surface.strokes.length > 0 ? applyStrokes(region, surface.strokes, this.photo) : region;
+    const sameEdits = sameArea && cached!.surface.strokes === surface.strokes;
+    let edited = sameEdits ? cached!.edited : null;
+    let clip = sameEdits ? cached!.clip : null;
+    let mask = sameEdits ? cached!.mask : null;
+    if (!fitting && !edited && area && this.photo) {
+      edited = surface.strokes.length > 0 ? applyStrokes(area, surface.strokes, this.photo) : area;
       clip = alphaCanvas(edited);
       // Feathered by a pixel of the working size (about 2 photo pixels), then filtered linearly by the GPU.
       mask = { width: edited.width, height: edited.height, data: featherMask(edited.data, edited.width, edited.height, 1) };
@@ -490,7 +534,7 @@ export class PhotoMode {
         console.warn('Could not lay out the photo surface', error);
       }
     }
-    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, edited, tint, clip, mask, shading, result, grid };
+    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, area, areaKey, found, cover, edited, tint, clip, mask, shading, result, grid };
     this.views.set(surface.id, view);
     return view;
   }
@@ -727,6 +771,7 @@ export class PhotoMode {
     if (!surface || !isConvexQuad(surface.fit.quad)) return;
     if (surface.fit.marks === 'surface') {
       this.store.commit((d) => act.setPhotoFit(d, surface.id, { confirmed: true }));
+      this.explainCover(surface.id);
       return;
     }
     const size = { w: surface.fit.rect.w, h: surface.fit.rect.h };
@@ -747,6 +792,16 @@ export class PhotoMode {
       return;
     }
     this.store.commit((d) => act.setPhotoFit(act.fitToRectangle(d, surface.id, size, extent), surface.id, { confirmed: true }));
+    this.explainCover(surface.id);
+  }
+
+  /** Says so when the tiles fill the corners because the wall finder found too little of the surface. */
+  private explainCover(id: PhotoSurface['id']): void {
+    const info = this.coverInfo(id);
+    if (!info || info.setting !== 'auto' || info.cover !== 'corners') return;
+    const surface = photoSurface(this.doc, id);
+    const word = surface?.plan.layout.surface === 'floor' ? 'floor' : 'wall';
+    this.hooks.toast(`The wall finder found only ${Math.round(info.found * 100)}% of this ${word}, so the tiles fill your corners. Use Remove for anything in front.`);
   }
 
   // ---- Floating status, legend and fit card ---------------------------------------------------

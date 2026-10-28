@@ -3,7 +3,7 @@ import type { PhotoMode } from '../../photo/photoMode';
 import { PHOTO_ICONS } from '../../photo/photoView';
 import { labelShares } from '../../photo/regions';
 import * as act from '../../state/actions';
-import { activeKind, photoSurface, photoSurfaceName } from '../../state/document';
+import { activeKind, photoSurface, photoSurfaceName, type TileCover } from '../../state/document';
 import type { AppState } from '../../state/store';
 import { h, icon } from '../dom';
 import type { TabContext } from './context';
@@ -50,7 +50,7 @@ export function photoTab(ctx: TabContext): HTMLElement {
   );
 
   if (photo) root.append(surfaceList(ctx));
-  if (photo && mode.surfaces.some((s) => s.fit.confirmed)) root.append(lightingSection(mode));
+  if (photo && mode.surfaces.some((s) => s.fit.confirmed)) root.append(lightingSection(mode, ctx));
 
   if (photo) {
     const content = h('div', { class: 'photo-found' }, h('p', { class: 'photo-status' }, statusLine(mode)));
@@ -134,7 +134,7 @@ function surfaceList(ctx: TabContext): HTMLElement {
 }
 
 /** The Room lighting slider, and a note where tiles can't be drawn. */
-function lightingSection(mode: PhotoMode): HTMLElement {
+function lightingSection(mode: PhotoMode, ctx: TabContext): HTMLElement {
   const percentOf = (light: number) => `${Math.round(light * 100)}%`;
   const value = h('span', { class: 'range-value' }, percentOf(mode.light));
   const slider = h('input', { type: 'range', min: 0, max: 100, step: 5, value: String(Math.round(mode.light * 100)), 'aria-label': 'Room lighting' });
@@ -153,6 +153,30 @@ function lightingSection(mode: PhotoMode): HTMLElement {
     ),
   );
   const surface = mode.activeSurface();
+  const info = surface && mode.coverInfo(surface.id);
+  if (surface && info) {
+    const word = surface.plan.layout.surface === 'floor' ? 'floor' : 'wall';
+    const choice = (value: TileCover, label: string) =>
+      h(
+        'button',
+        { type: 'button', class: `segment${info.setting === value ? ' is-on' : ''}`, 'aria-pressed': String(info.setting === value), onclick: () => mode.setTileCover(surface.id, value) },
+        label,
+      );
+    const found = `${Math.round(info.found * 100)}%`;
+    const note =
+      info.setting === 'auto'
+        ? info.cover === 'found'
+          ? `Automatic: where the wall finder found the ${word} (${found} of the area inside the corners), so things in front stay in front.`
+          : `Automatic: the wall finder found only ${found} of the area inside the corners, so the tiles fill them. Use Remove for anything in front.`
+        : info.cover === 'found'
+          ? `Only where the wall finder found the ${word}: ${found} of the area inside the corners.`
+          : 'Everywhere inside the corners. Use Remove for anything in front.';
+    content.append(
+      h('p', { class: 'field-label' }, `Tiles cover (${photoSurfaceName(ctx.state.doc, surface.id)})`),
+      h('div', { class: 'segmented cover-choice', role: 'group', 'aria-label': 'Where the tiles go' }, choice('auto', 'Automatic'), choice('found', `Where the ${word} is`), choice('corners', 'Inside the corners')),
+      h('p', { class: 'tab-hint' }, note),
+    );
+  }
   if (surface && surface.strokes.length > 0) {
     options.append(h('button', { type: 'button', class: 'option', onclick: () => mode.clearBrush(surface.id) }, 'Clear brush changes'));
   }

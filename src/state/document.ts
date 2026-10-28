@@ -13,7 +13,10 @@ import {
   type XMode,
   type YMode,
 } from '../engine';
+import type { TileCover } from '../photo/fit';
 import type { Pt, Quad } from '../photo/homography';
+
+export type { TileCover };
 
 export type WallLayout = Extract<Layout, { surface: 'wall' }>;
 export type FloorLayout = Extract<Layout, { surface: 'floor' }>;
@@ -72,8 +75,9 @@ export interface PhotoSurface<L extends Layout = Layout> {
   seed: Pt;
   plan: SurfacePlan<L>;
   fit: PhotoFit;
-  /** Corrections to the segmentation's region, in order. */
+  /** Corrections to where the tiles go, in order. */
   strokes: BrushStroke[];
+  cover: TileCover;
 }
 
 /** The undoable design: the designer's wall and floor, surfaces picked in a photo, and which one is being edited. */

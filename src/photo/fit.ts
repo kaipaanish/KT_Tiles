@@ -4,6 +4,13 @@
  */
 import { apply, applyHomogeneous, invert, rectCorners, surfaceToPhoto, type Mat3, type Pt, type Quad } from './homography';
 
+/**
+ * Where a tiled photo surface's tiles go, inside its corners: wherever the wall finder found that
+ * kind of surface (so fixtures stay in front), everywhere inside the corners, or (auto) the first
+ * unless the wall finder found too little of the area to trust.
+ */
+export type TileCover = 'auto' | 'found' | 'corners';
+
 export interface Rect {
   x: number;
   y: number;
@@ -113,4 +120,30 @@ export function insidePolygon(points: readonly Pt[], p: Pt): boolean {
   let right = 0;
   for (const x of crossings(points, p.y)) if (x > p.x) right++;
   return right % 2 === 1;
+}
+
+/**
+ * Below this share of the area inside the corners, the wall finder has most likely missed the
+ * surface (taken a plain wall for a door, say): the user's corners are trusted instead.
+ */
+export const FOUND_SHARE_MIN = 0.4;
+
+/**
+ * Where a tiled surface's tiles go, as a 0/1 mask: inside its corners (`inside`), either where
+ * the wall finder labelled that kind of surface, or everywhere. Also returns how much of the
+ * inside the wall finder found, and which of the two `cover` came to.
+ */
+export function tileArea(labels: Uint8Array, label: number, inside: Uint8Array, cover: TileCover): { area: Uint8Array; found: number; cover: 'found' | 'corners' } {
+  let total = 0;
+  let found = 0;
+  for (let i = 0; i < inside.length; i++) {
+    if (!inside[i]) continue;
+    total++;
+    if (labels[i] === label) found++;
+  }
+  const share = total > 0 ? found / total : 0;
+  const resolved = cover === 'auto' ? (share >= FOUND_SHARE_MIN ? 'found' : 'corners') : cover;
+  const area = new Uint8Array(inside.length);
+  for (let i = 0; i < inside.length; i++) area[i] = inside[i] && (resolved === 'corners' || labels[i] === label) ? 1 : 0;
+  return { area, found: share, cover: resolved };
 }

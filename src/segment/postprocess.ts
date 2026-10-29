@@ -197,7 +197,7 @@ const mul = (a: Float32Array, b: Float32Array) => a.map((v, i) => v * b[i]!);
  * probability changes, the filter fits it as a linear function of the photo's colour in a small
  * window, so the edge moves onto the photo's own edge (a basin's rim, the side of a WC).
  */
-export function guidedLabels(probs: ClassProbabilities, guide: RGBAImage, options: GuidedOptions): Uint8Array {
+export function guidedLabels(probs: ClassProbabilities, guide: RGBAImage, options: GuidedOptions, surface?: Uint8Array): Uint8Array {
   const { width, height } = guide;
   const fw = Math.max(1, Math.round(width / options.subsample));
   const fh = Math.max(1, Math.round(height / options.subsample));
@@ -298,13 +298,17 @@ export function guidedLabels(probs: ClassProbabilities, guide: RGBAImage, option
       const floor = down(fa0, a, b, ty) * red + down(fa1, a, b, ty) * green + down(fa2, a, b, ty) * blue + down(fb, a, b, ty);
       const ceiling = down(ca0, a, b, ty) * red + down(ca1, a, b, ty) * green + down(ca2, a, b, ty) * blue + down(cb, a, b, ty);
       labels[o] = pickLabel(wall, floor, ceiling, 1 - wall - floor - ceiling);
+      if (surface) surface[o] = surfaceByte(wall + floor + ceiling);
     }
   }
   return labels;
 }
 
+/** A probability as a byte, 0–255 (a uint8 array clamps). */
+const surfaceByte = (p: number) => Math.round(p * 255);
+
 /** Labels every pixel from the model's probabilities scaled up bilinearly, with no help from the photo. */
-export function bilinearLabels(probs: ClassProbabilities, width: number, height: number): Uint8Array {
+export function bilinearLabels(probs: ClassProbabilities, width: number, height: number, surface?: Uint8Array): Uint8Array {
   const up = [probs.wall, probs.floor, probs.ceiling].map((p) => upsampleBilinear(p, probs.width, probs.height, width, height));
   const labels = new Uint8Array(width * height);
   for (let i = 0; i < labels.length; i++) {
@@ -312,6 +316,7 @@ export function bilinearLabels(probs: ClassProbabilities, width: number, height:
     const floor = up[1]![i]!;
     const ceiling = up[2]![i]!;
     labels[i] = pickLabel(wall, floor, ceiling, 1 - wall - floor - ceiling);
+    if (surface) surface[i] = surfaceByte(wall + floor + ceiling);
   }
   return labels;
 }
@@ -458,8 +463,12 @@ export const DEFAULT_REFINE: RefineOptions = {
   islands: { minSurface: 0.002, minOther: 0.0002 },
 };
 
-/** Labels each pixel of the working image (the guide) from the model's probabilities. */
-export function refine(probs: ClassProbabilities, guide: RGBAImage, options: RefineOptions = DEFAULT_REFINE): Uint8Array {
-  const labels = options.edges === 'guided' ? guidedLabels(probs, guide, options.guided) : bilinearLabels(probs, guide.width, guide.height);
+/**
+ * Labels each pixel of the working image (the guide) from the model's probabilities. Given
+ * `surface` (one byte per pixel), it also fills in how likely each pixel is some surface (wall,
+ * floor or ceiling), 0–255, cleaned up the same way.
+ */
+export function refine(probs: ClassProbabilities, guide: RGBAImage, options: RefineOptions = DEFAULT_REFINE, surface?: Uint8Array): Uint8Array {
+  const labels = options.edges === 'guided' ? guidedLabels(probs, guide, options.guided, surface) : bilinearLabels(probs, guide.width, guide.height, surface);
   return removeIslands(labels, guide.width, guide.height, options.islands);
 }

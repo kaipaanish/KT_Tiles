@@ -61,10 +61,13 @@ When a photo opens, the **wall finder** marks the walls (blue), floor (orange) a
 2. **Drag the corners** onto the surface's edges. A magnifier shows the photo under the corner, and corners may go beyond the photo's edge (zoom out to reach them). Each drag is one undo step.
 3. **Confirm the real size** in the card below the photo, then **Done**. If the surface's corners can't be seen, the corners can mark **a known rectangle** on it instead, such as a door or a tile: enter its size, and the surface's size is measured from the photo.
 
+**A wall bigger than the photo** (it runs off the top and bottom of the photo, or off three of its edges) has no corners to fit, so it starts with a known rectangle. The rectangle follows the wall's own lines: its tile joints, stripes and edges. Where lines run near the tap, the rectangle's edges sit on them, so on a tiled wall it often marks one tile. Dragging a corner keeps it lined up, with two more corners sliding along. Put it on something you know the size of and enter that size. Without enough lines on the wall, the corners are fitted as usual.
+
 The tiles then appear on the surface in perspective, behind fixtures, keeping the room's light and shadow. **Room lighting** in the Photo tab sets how much (70% to start). Tap another wall or the floor to tile it too; each has its own design.
 - The Design, Tiles, Align and Count tabs change the surface being edited ("Editing Wall in the photo"). A wall can use one series and the floor another.
 - Tap a surface to edit it. The Photo tab lists them, with **Corners** to fit one again and **Remove**.
 - **Tiles cover**, in the Photo tab, sets where the tiles go inside the corners. **Where the wall is** follows the wall finder, so fixtures stay in front. **Inside the corners** fills them. **Automatic** (the default) uses the wall finder unless it found less than 40% of the area inside the corners, as when it takes a plain wall for a door; then the tiles fill your corners, and a message says so.
+- Patches of wall the wall finder misread (a textured wall taken for a screen door, say) are filled back in when they look like the wall around them with no edge between, so the tiles don't have holes. Things in front have an outline and stay out. If a fair share inside the corners is still untiled after Done, a message suggests **Add** for any of it that is wall.
 - **Designer** shows the surface being edited flat, with "Photo wall:" in the size chip. **Wall** or **Floor** there goes back to the designer's own surfaces.
 
 **Editing on the photo:** with a tiled surface selected, a bar under the photo offers three tools.
@@ -123,7 +126,7 @@ These open the app on a particular design, for demos and checks:
 | `sample` | `old-bathroom-subway-tiles.jpg` | With `view=photo`: open that photo from `public/samples/` |
 | `backend` | `wasm` | Run the wall finder on WASM even where WebGPU is available, for comparison |
 | `edges` | `bilinear` | Turn off the photo-guided edges, for comparison |
-| `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks |
+| `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks. `fake-wall`: a wall filling the photo |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 | `fresh` | `1` | Start from the default design instead of the autosaved one |
 
@@ -138,7 +141,8 @@ src/render/    canvas renderer, texture cache, previews, the shared picture
 src/render/webgl/  the tiles on the photo: mesh, shaders and the WebGL2 compositor
 src/state/     the design document, pure edit actions, store with undo/redo, autosave
 src/ui/        canvas view, gestures, modes, top bar, band handles, the sheet and its tabs, share
-src/photo/     photo mode: getting the photo, the photo stage, regions, and the perspective maths
+src/photo/     photo mode: getting the photo, the photo stage, regions, the perspective maths,
+               a wall's lines (lines.ts) and filling misread patches (holes.ts)
 src/segment/   the wall finder: model interface, worker, and cleaning up its output
 public/samples/  sample photos and their credits, listed automatically
 scripts/       browser check (development only)
@@ -154,7 +158,7 @@ The other engine functions are:
 - `snapPatternOffset`, which snaps the pattern during a drag
 - validation helpers for the data, bands and rotations
 
-`tsconfig.engine.json` type-checks `src/engine` without the DOM library, so any use of `document`, `window` or canvas there fails `npm run typecheck` and `npm run build`. It checks photo mode's pure maths the same way: `homography.ts`, `maskToQuad.ts` and `pointer.ts` in `src/photo/`.
+`tsconfig.engine.json` type-checks `src/engine` without the DOM library, so any use of `document`, `window` or canvas there fails `npm run typecheck` and `npm run build`. It checks photo mode's pure maths the same way, including `homography.ts`, `maskToQuad.ts`, `fit.ts`, `lines.ts` and `holes.ts` in `src/photo/`.
 
 ## Adding a real KT series
 
@@ -406,7 +410,7 @@ Where the brief was ambiguous, these are the choices made.
     - It is worked out at 256 px and blurred three times with a radius of 5% of that size (about two tiles in a typical photo), so the old tiles and grout don't show through.
     - The blur is a normalised convolution: only the surface's region counts, so a white WC doesn't brighten the wall beside it.
     - The result is divided by the region's average, the tiles are multiplied by it, and the slider sets how much (default 70%).
-    - On the sample photo, moving the slider from 0% to 100% changes the brightness of the drawn tiles by up to 50 levels out of 255.
+    - On the sample photo, moving the slider from 0% to 100% changes the brightness of the drawn tiles by up to 25 levels out of 255. (It was 50 when first measured, in an earlier version; `photo-tiles` prints the current figure.)
 70. **The tiles are drawn at the screen's pixel ratio** (up to 3×) and again with every zoom and pan. The shared picture, still to come, will be drawn at the photo's own resolution.
 71. **Without WebGL2, the tile grid shows where the tiles go**, and the Photo tab says why. `?webgl=0` forces this, for checks.
 72. **The region colours stay off tiled areas**: they are cut out where tiles are drawn. Otherwise the colour would tint the tiles' soft edges, while untiled walls should still be coloured to invite a tap.
@@ -450,6 +454,61 @@ Where the brief was ambiguous, these are the choices made.
     - **Tiles cover** in the Photo tab overrides this either way, and is undoable. Room lighting is worked out over the same area.
     - On the sample bathroom the finder found most of the wall, so the bathtub still stays in front. Browser check `photo-cover` recreates the disagreement, and `photo-tiles` covers the normal case.
 
+**A wall bigger than the photo**
+
+These came from two photos of a real wall: a large textured one with stripes, photographed at an angle and close up. The photo used in the app was rebuilt from a screenshot of its regions, for measuring. Neither is in the repository.
+
+84. **When a wall runs past the photo's edges, its own lines set the perspective.**
+    - The problem: the wall finder's region reached every edge of the photo, so the fitted corners were just the photo's corners. The tiles came out flat, with their rows sloping the opposite way to the wall's stripes.
+    - The app now finds the photo's straight lines with an LSD-style detector at 512 px (25–65 ms in headless desktop Chrome). From the lines on the wall it works out where the wall's horizontals meet, and where its verticals meet.
+    - Verticals have to meet far off, at least 1.25 long sides from the centre. Otherwise they are taken as upright in the photo.
+    - This applies when the region reaches the photo's top and bottom, or three of its edges. Reaching an edge means covering at least 30% of it, because things in front and misread patches often cover much of an edge.
+    - A wall's size can't be read from a photo that doesn't show its edges. So the corners mark a rectangle along the wall's lines around the tap, snapped to the nearest lines, and the card asks for something of known size.
+    - The first guess at the rectangle's size treats the visible wall as the designer's wall height, which is what corners on the photo's edges amounted to before. Its width-to-height comes from the lines and a typical phone camera (about 70° across the long side).
+    - When a corner is dragged, the rectangle keeps to the lines: the opposite corner stays put and the other two slide towards the vanishing points. Switching to "The wall's edges" frees the corners again.
+    - Without enough lines (a plain painted wall), the corners are fitted as before.
+    - Tests:
+      - Unit tests use a wall drawn at 35°. The vanishing point comes within 12 px of the true one (about 610 px off), and a rectangle's width-to-height within 0.1%.
+      - Browser check `photo-lines` uses a generated striped wall with `?segmenter=fake-wall`. It checks that the rectangle follows the lines, before and after a drag.
+    - Still open: a wall with a step in it (a pillar) is still one flat surface, so tap its main face.
+85. **Nothing is drawn off the photo.** A wall's outline can now run far past the photo.
+    - The tile shader drops fragments outside the photo, where the mask's edge pixels would otherwise repeat.
+    - The outline and the guides are clipped to the photo.
+    - `photo-lines` checks that just past each edge of the photo there are no tiles.
+
+**Misread patches**
+
+86. **Bits of wall the wall finder misread are filled back in.**
+    - The problem, on the close-up: SegFormer-B0 took 15% of the photo, which was all wall, for a "screen door" (7%), a bathtub (3%), the floor and so on, leaving holes in the tiles.
+    - A bigger model doesn't fix this. B2 (twice the download) missed 17%, and B1 more. B0 on WASM matched B0 on WebGPU. So the fix comes after the model.
+    - The photo is cut into about 1,500 superpixels (SLIC at 512 px). Inside the corners, a patch not labelled as the surface joins it when it carries on from a neighbour already in:
+      - mean colour within 8 (CIELAB);
+      - similar texture;
+      - no edge between them stronger than 1.6× the smoother one's texture.
+    - The model's own probabilities guard against things in front. The guided filter already refines them to the photo's edges for the labels. It now also keeps each pixel's chance of being some surface (wall, floor or ceiling), one byte per pixel.
+    - A patch with under a 20% chance stays out, unless the surface all but surrounds it (75% of its border).
+    - A wall taken for floor counts as a surface, so it is filled.
+    - Each group of added patches must blend into what's around it (no edge) along at least half of its border. That means the surface, and the rest of a misread patch. A thing in front has an edge against the wall and against whatever else it touches.
+    - A misread patch lies among the surface and other unsure bits. A thing in front often touches things the model is sure aren't a surface. So if an unsure blob (added patches and the unsure bits joined to them) touches such things (under 10%) along a quarter of its border or more, its added patches are dropped.
+    - The bath mixer is why that last rule exists:
+      - Its chrome reflects the tiles, so it passes the colour, texture and edge tests. Even the refined chance makes it 27–29% surface.
+      - The bottom of the starter rectangle cuts through it.
+      - Two earlier versions tiled it, and `photo-tiles` caught both. It stays out now because it is set into the bath.
+    - Specks wholly within the surface are filled too. These stay out:
+      - slivers at a fixture's edge, which are joined to the fixture;
+      - bits at the edge of the corners with no added patch in them, which may be the end of a thing the corners cut through.
+    - Results:
+      - On the close-up, the untiled share inside the corners went from 18% to 5.4%. What's left is the patch's tip and the area around a cable, which stays in front as it should.
+      - On the sample bathroom, the mixer, basin and bath stay in front (`photo-tiles`). Even with the whole photo as the corners, nothing there is filled.
+    - What didn't work:
+      - Colour and edges alone, without the model's probabilities, filled more of the close-up, but also the bath mixer and a bin.
+      - A wall-only probability threshold left the floor-labelled patch.
+      - The model's coarse output (before the guided filter) blurs the wall into small things.
+      - A per-pixel threshold can't separate the mixer from a misread patch: their chances overlap.
+    - "Found" (for Automatic) still counts the finder's labels alone.
+    - After Done, if more than 4% inside the corners is left untiled, a message suggests Add for any of it that is wall.
+    - The superpixels are made once per photo, the first time a surface is tiled. Done takes about 250–450 ms in headless desktop Chrome, including the superpixels; this needs checking on a phone.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -477,11 +536,12 @@ What "done" means for step 2, and how each item is verified. Browser checks run 
 | Walls, floor and ceiling are labelled, and tapping a region switches to the matching Wall or Floor menus | Done | `photo-segment` on every sample (regions, legend, timings). In `photo-fit`, the Design tab offers wall series for a wall and floor series for the floor |
 | Corner handles and dimensions fit the surface; tiles appear in correct perspective; grout lines stay straight; medallion and sprig motifs stay continuous | Done | `photo-fit` (corner drag with the loupe, undo and redo, real size), `photo-rectangle` (a known rectangle), and `photo-tiles` with its grout close-up. The perspective-correct mapping has unit tests. The sprig runs on unbroken across tiles in the shared picture |
 | WC, basin and door stay in front of the tiles; the brush fixes mistakes | Done | `photo-tiles` reads GPU pixels: the tiles are opaque on the wall and transparent over the bathtub. `photo-edges` covers the guided filter at the basin and WC. In `photo-edit`, Remove hides tiles, undo brings them back, and Add tiles over a fixture |
-| The Room lighting slider visibly keeps shadows and light falloff | Done; the effect is modest on the sample | `photo-tiles`: from 0% to 100% the tiles' brightness changes by up to 50 levels out of 255, with screenshots at both. Unit tests cover falloff and fixtures outside the surface |
+| The Room lighting slider visibly keeps shadows and light falloff | Done; the effect is modest on the sample | `photo-tiles`: from 0% to 100% the tiles' brightness changes by up to 25 levels out of 255, with screenshots at both. Unit tests cover falloff and fixtures outside the surface |
 | Dragging on the photo shifts the pattern with the same snapping and edge-cut labels as the designer | Done | `photo-edit`: a 150 mm drag snaps to a centred motif, as in the designer's own `pattern-drag`, with edge cuts and the centreline mid-drag. Both views use one action, which has unit tests |
 | A floor and a wall in the same photo can use different series | Done | `photo-fit` and `photo-share-api` ("Wall: Demo Ivory Bloom · Floor: Demo Floor"), plus action tests |
 | The before/after slider and Share PNG work | Done in the browser; **WhatsApp on a phone still to try** | `photo-compare` (drag and clip), `photo-share` (a 2048 px wide PNG with the summary) and `photo-share-api` (the file reaches the Web Share API) |
 | The network panel shows no photo upload, only the one-time model download | Done | `photo-network`: GETs only and no request bodies, to the site, huggingface.co and cdn.jsdelivr.net |
-| All tests pass, including step 1's | Done | `npm test`: 182 tests. Browser check: 60 pages, no console errors |
+| A wall bigger than the photo gets the right perspective; bits the wall finder misread don't leave holes (from testing on real photos) | Done on the two photos tested; **more real photos to try** | Decisions 84–86. `photo-lines` (lines on a generated wall, the rectangle kept to them while dragged, nothing off the photo); `photo-tiles` (fixtures still in front); unit tests for lines, vanishing points, the locked rectangle and the fill |
+| All tests pass, including step 1's | Done | `npm test`: 201 tests. Browser check: 64 pages, no console errors |
 
 The wall finder on the sample, in headless desktop Chrome: WebGPU fp16 about 3 s to load (the download already cached) and 3 s to run the first time; WASM about 2.3 s to run.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Pt } from './homography';
-import { emptyMask, fitQuad, insideQuad, QUAD_MISMATCH_LIMIT, type Mask } from './maskToQuad';
+import { emptyMask, fitQuad, insideQuad, offPhotoSides, QUAD_MISMATCH_LIMIT, type Mask } from './maskToQuad';
 
 const W = 400;
 const H = 300;
@@ -89,6 +89,17 @@ describe('maskToQuad', () => {
     const firstWall = mask(W, H, rect(0, 0, 200, 300));
     const fit = fitQuad(both, { x: 300, y: 150 }, firstWall);
     expect(fit?.quad).toEqual(rect(200, 0, 400, 300));
+  });
+
+  it("knows which of the photo's edges a region runs off, even with things in front along them", () => {
+    // A wall filling the photo, but with a basin covering most of the bottom edge (a third of it is wall).
+    const wall = mask(W, H, rect(0, 0, 400, 220), rect(0, 220, 130, 300));
+    expect(offPhotoSides(wall)).toEqual(['top', 'bottom', 'left', 'right']);
+    expect(fitQuad(wall, { x: 200, y: 100 })?.offPhoto).toEqual(['top', 'bottom', 'left', 'right']);
+    // Under 30% of an edge doesn't count.
+    expect(offPhotoSides(mask(W, H, rect(0, 0, 400, 220), rect(0, 220, 100, 300)))).toEqual(['top', 'left', 'right']);
+    // A wall between the ceiling and the floor reaches only the sides.
+    expect(offPhotoSides(mask(W, H, rect(0, 30, 400, 240)))).toEqual(['left', 'right']);
   });
 
   it('falls back to the largest region when the tap misses, and gives up on an empty mask', () => {

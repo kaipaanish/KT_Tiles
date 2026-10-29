@@ -225,9 +225,10 @@ export function startApp(root: HTMLElement): void {
       toast: (message) => toast(stage, message),
     },
     {
-      // For checks and comparisons: ?segmenter=fake skips the model, ?backend=wasm skips the GPU,
-      // ?edges=bilinear turns off the photo-guided edges, ?webgl=0 shows the tile grid instead of tiles.
-      segmenter: params.get('segmenter') === 'fake' ? 'fake' : 'model',
+      // For checks and comparisons: ?segmenter=fake skips the model (a plain room; fake-wall, a wall
+      // filling the photo), ?backend=wasm skips the GPU, ?edges=bilinear turns off the
+      // photo-guided edges, ?webgl=0 shows the tile grid instead of tiles.
+      segmenter: params.get('segmenter') === 'fake' ? 'fake' : params.get('segmenter') === 'fake-wall' ? 'fake-wall' : 'model',
       backend: params.get('backend') === 'wasm' ? 'wasm' : 'webgpu',
       edges: params.get('edges') === 'bilinear' ? 'bilinear' : 'guided',
       webgl: params.get('webgl') !== '0',

@@ -15,6 +15,7 @@ import {
   paintStroke,
   removeBand,
   removePhotoSurface,
+  setPhotoFit,
   setTileCover,
   resetTiles,
   rotateCell,
@@ -283,6 +284,36 @@ describe('photo surfaces', () => {
     // Rounded to 10 mm; the rectangle sits where the region's bottom-left puts it.
     expect(surface.plan.surface).toEqual({ widthMm: 2400, heightMm: 2710, tiledHeightMm: 2710 });
     expect(surface.fit).toMatchObject({ marks: 'rectangle', rect: { x: 604, y: 3, w: 800, h: 2000 } });
+  });
+
+  it("on a wall past the photo's edges, mark a rectangle that keeps to the wall's lines", () => {
+    // The wall's horizontals meet far to the right; its verticals stay vertical (a point at infinity).
+    const vanishing = { h: [3000, 500, 1] as [number, number, number], v: [0, 1, 0] as [number, number, number] };
+    const lined: Quad = [
+      { x: 400, y: 600 },
+      { x: 600, y: 590 },
+      { x: 600, y: 410 },
+      { x: 400, y: 380 },
+    ];
+    // Make it exact: the top and bottom edges through the vanishing point.
+    const through = (p: { x: number; y: number }, x: number) => ({ x, y: 500 + ((p.y - 500) * (3000 - x)) / (3000 - p.x) });
+    lined[1] = through(lined[0], 600);
+    lined[2] = through(lined[3], 600);
+    let doc = addPhotoSurface(fresh(), { photoId: 'p', kind: 'wall', seed: { x: 500, y: 500 }, quad: lined, starter: false, lined: { vanishing, size: { w: 600, h: 900 } } });
+    expect(doc.photo[0]!.fit).toMatchObject({ marks: 'rectangle', rect: { x: 0, y: 0, w: 600, h: 900 }, vanishing });
+    // Dragging the top-left corner: the bottom-right one stays, the other two slide along the lines.
+    doc = movePhotoCorner(doc, 'photo-1', 3, { x: 380, y: 350 });
+    const [bl, br, tr, tl] = doc.photo[0]!.fit.quad;
+    expect(br).toEqual(lined[1]);
+    expect(tl).toEqual({ x: 380, y: 350 });
+    expect(bl.x).toBeCloseTo(380, 6);
+    expect(tr.x).toBeCloseTo(br.x, 6);
+    const slope = (p: { x: number; y: number }) => (p.y - 500) / (3000 - p.x);
+    expect(slope(tr)).toBeCloseTo(slope(tl), 9);
+    expect(slope(bl)).toBeCloseTo(slope(br), 9);
+    // Marking the wall's own edges instead frees the corners.
+    const free = movePhotoCorner(setPhotoFit(doc, 'photo-1', { marks: 'surface' }), 'photo-1', 3, { x: 300, y: 300 });
+    expect(free.photo[0]!.fit.quad.slice(0, 3)).toEqual(doc.photo[0]!.fit.quad.slice(0, 3));
   });
 
   it('hand editing back to the designer surface of the same kind when removed', () => {

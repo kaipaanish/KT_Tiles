@@ -46,6 +46,8 @@ flat in vec4 v_joints;
 out vec4 outColor;
 void main() {
   vec2 uv = (u_fragToUv * vec3(gl_FragCoord.xy, 1.0)).xy;
+  // Nothing to tile off the photo (a surface's outline can run past it; its mask's edge would repeat out there).
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) discard;
   float mask = texture(u_mask, uv).r;
   if (mask <= 0.0) discard;
   vec3 colour = texture(u_tile, v_uv).rgb;

@@ -995,6 +995,112 @@ export const scenarios = [
     },
   },
   {
+    // A wall running past every edge of the photo, seen at 35°: its outline gives no corners, so
+    // they mark a rectangle along its lines (stripes every 300 mm, joints every 600 mm), and keep
+    // to them when dragged. The photo is drawn here, so where its lines meet is known exactly.
+    name: 'photo-lines',
+    path: './?debug=1&view=photo&segmenter=fake-wall',
+    async run(page, { device, shot }) {
+      const W = 1200;
+      const H = 900;
+      const f = 0.72 * W;
+      const turn = (35 * Math.PI) / 180;
+      const png = await page.evaluate(
+        ([W, H, f, turn]) => {
+          // Camera space: x right, y down, z ahead; the wall's horizontal runs off to the right.
+          const along = [Math.cos(turn), 0, Math.sin(turn)];
+          const origin = [-900, 900, 1500];
+          const project = (u, v) => {
+            const p = [origin[0] + u * along[0], origin[1] - v, origin[2] + u * along[2]];
+            return [(f * p[0]) / p[2] + W / 2, (f * p[1]) / p[2] + H / 2];
+          };
+          const c = document.createElement('canvas');
+          c.width = W;
+          c.height = H;
+          const g = c.getContext('2d');
+          g.fillStyle = '#e9e3d7';
+          g.fillRect(0, 0, W, H);
+          const quad = (u0, v0, u1, v1, colour) => {
+            g.fillStyle = colour;
+            g.beginPath();
+            [project(u0, v0), project(u1, v0), project(u1, v1), project(u0, v1)].forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+            g.closePath();
+            g.fill();
+          };
+          const [u0, u1, v0, v1] = [-2200, 9000, -3000, 5000];
+          for (let v = v0; v < v1; v += 300) quad(u0, v, u1, v + 40, '#b9ab90');
+          for (let u = 0; u < u1; u += 600) quad(u, v0, u + 8, v1, '#8d8a84');
+          return c.toDataURL('image/png').split(',')[1];
+        },
+        [W, H, f, turn],
+      );
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), press(page, device, '.photo-empty button:has-text("Choose from gallery")')]);
+      await chooser.setFiles({ name: 'striped-wall.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+      await segmented(page, 'striped-wall.png');
+      const photo = await page.evaluate(() => window.ktDebug.photo());
+      const k = photo.width / W;
+      // Where the wall's horizontals meet: straight ahead along the wall, at the camera's height.
+      const expected = { x: ((f * Math.cos(turn)) / Math.sin(turn) + W / 2) * k, y: (H / 2) * k };
+      const input = await pointer(page, device);
+      await input.tap(await photoScreen(page, photo.width * 0.45, photo.height * 0.5));
+      await page.waitForFunction(() => window.ktDebug.surfaces().length === 1, null, { timeout: 5000 });
+
+      const meet = (a, b, c, d) => {
+        const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
+        const s = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
+        return { x: a.x + s * (b.x - a.x), y: a.y + s * (b.y - a.y) };
+      };
+      const followsLines = (quad, label) => {
+        const h = meet(quad[0], quad[1], quad[3], quad[2]);
+        const off = Math.hypot(h.x - expected.x, h.y - expected.y) / Math.hypot(expected.x - photo.width / 2, expected.y - photo.height / 2);
+        assert(off < 0.05, `${label}: top and bottom meet where the wall's horizontals do (${Math.round(h.x)}, ${Math.round(h.y)} vs ${Math.round(expected.x)}, ${Math.round(expected.y)})`);
+        const lean = (p, q) => Math.abs(p.x - q.x) / Math.abs(p.y - q.y);
+        assert(lean(quad[0], quad[3]) < 0.02 && lean(quad[1], quad[2]) < 0.02, `${label}: the sides stay upright like the wall's verticals`);
+      };
+      const [lined] = await surfacesOf(page);
+      assert(lined.marks === 'rectangle' && lined.vanishing, `a wall running off the photo marks a rectangle along its lines (${lined.marks})`);
+      followsLines(lined.quad, 'the rectangle');
+      assert((await page.locator('.fit-card .fit-note:has-text("runs past the photo")').count()) === 1, 'the card says why');
+      assert((await page.locator('.photo-hint:has-text("something you know the size of")').count()) === 1, 'the hint says what to do');
+      await pause(150);
+      await shot('rectangle');
+
+      // Drag the top-right corner: the rectangle stays along the lines; the bottom-left stays put.
+      const from = await photoScreen(page, lined.quad[2].x, lined.quad[2].y);
+      await input.down(from);
+      await input.move({ x: from.x + 30, y: from.y - 25 }, 6);
+      await input.up();
+      await pause(60);
+      const [dragged] = await surfacesOf(page);
+      assert(Math.hypot(dragged.quad[2].x - lined.quad[2].x, dragged.quad[2].y - lined.quad[2].y) > 10, 'the corner moved');
+      assert(Math.hypot(dragged.quad[0].x - lined.quad[0].x, dragged.quad[0].y - lined.quad[0].y) < 0.5, 'the opposite corner stayed');
+      followsLines(dragged.quad, 'after a drag');
+
+      // Its size, then Done: the tiles cover the whole photo, which is all wall.
+      const width = page.locator('.fit-card input[aria-label="Rectangle width"]');
+      await width.fill('600');
+      await width.press('Enter');
+      const height = page.locator('.fit-card input[aria-label="Rectangle height"]');
+      await height.fill('900');
+      await height.press('Enter');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.rect.w === 600 && window.ktDebug.surfaces()[0]?.rect.h === 900, null, { timeout: 2000 });
+      await press(page, device, '.fit-card button:text-is("Done")');
+      await page.waitForFunction(() => window.ktDebug.surfaces()[0]?.confirmed, null, { timeout: 3000 });
+      const corners = [0.05, 0.95].flatMap((u) => [0.05, 0.95].map((v) => ({ x: photo.width * u, y: photo.height * v })));
+      for (const p of corners) assert((await alphaAt(page, p)) > 200, `tiles at (${Math.round(p.x)}, ${Math.round(p.y)})`);
+      // Nothing off the photo, though the surface's outline runs well past it.
+      const off = [
+        { x: photo.width * 1.03, y: photo.height / 2 },
+        { x: -photo.width * 0.03, y: photo.height / 2 },
+        { x: photo.width / 2, y: photo.height * 1.03 },
+        { x: photo.width / 2, y: -photo.height * 0.03 },
+      ];
+      for (const p of off) assert((await alphaAt(page, p)) < 30, `no tiles off the photo at (${Math.round(p.x)}, ${Math.round(p.y)})`);
+      await pause(150);
+      await shot('tiles');
+    },
+  },
+  {
     // Before / after: the tiles only to the right of the line, which drags.
     name: 'photo-compare',
     path: './?debug=1&view=photo&sample=old-bathroom-subway-tiles.jpg',

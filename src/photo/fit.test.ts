@@ -110,6 +110,16 @@ describe('where the tiles go', () => {
     expect(tileArea(labels(FOUND_SHARE_MIN), 1, inside, 'auto').cover).toBe('found');
   });
 
+  it("adds the bits the finder misread, without counting them as found, and says what's left untiled", () => {
+    const filled = Uint8Array.from({ length: 40 }, (_, i) => (i >= 32 && i < 36 ? 1 : 0));
+    const result = tileArea(labels(0.8), 1, inside, 'auto', filled);
+    expect(result.cover).toBe('found');
+    expect(result.found).toBeCloseTo(0.8, 6);
+    expect(count(result.area)).toBe(36);
+    expect(result.missed).toBeCloseTo(0.1, 6);
+    expect(tileArea(labels(0.8), 1, inside, 'corners', filled).missed).toBe(0);
+  });
+
   it('follows an explicit choice either way, and never goes outside the corners', () => {
     expect(count(tileArea(labels(0.05), 1, inside, 'found').area)).toBe(2);
     expect(count(tileArea(labels(0.9), 1, inside, 'corners').area)).toBe(40);

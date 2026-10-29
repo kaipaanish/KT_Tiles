@@ -38,6 +38,12 @@ export interface Segmentation {
   height: number;
   /** One label per pixel: OTHER, WALL, FLOOR or CEILING. */
   labels: Uint8Array;
+  /**
+   * How likely the model thought each pixel is some surface (wall, floor or ceiling), 0–255, with
+   * the same photo-guided clean-up as the labels. Where it misread a bit of wall it usually still
+   * gave it a fair chance; things in front, next to none.
+   */
+  surfaceChance?: Uint8Array;
   /** Which model and backend produced it, e.g. "SegFormer-B0, WASM 8-bit". */
   model: string;
   /** Milliseconds: loading the model (0 once it is loaded), running it, and cleaning up its output. */

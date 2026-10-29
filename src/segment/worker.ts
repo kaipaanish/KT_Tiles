@@ -87,15 +87,17 @@ async function segment(request: WorkerRequest): Promise<void> {
   }
   const run = performance.now() - runStart;
   const refineStart = performance.now();
-  const labels = refine(probabilities, image, { ...DEFAULT_REFINE, edges: request.edges });
+  const surfaceChance = new Uint8Array(image.width * image.height);
+  const labels = refine(probabilities, image, { ...DEFAULT_REFINE, edges: request.edges }, surfaceChance);
   const segmentation: Segmentation = {
     width: image.width,
     height: image.height,
     labels,
+    surfaceChance,
     model: current.name,
     timings: { load: Math.round(load), run: Math.round(run), refine: Math.round(performance.now() - refineStart) },
   };
-  scope.postMessage({ type: 'done', id, segmentation }, [labels.buffer]);
+  scope.postMessage({ type: 'done', id, segmentation }, [labels.buffer, surfaceChance.buffer]);
 }
 
 scope.onmessage = (event) => {

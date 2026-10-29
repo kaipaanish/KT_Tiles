@@ -128,12 +128,23 @@ export function insidePolygon(points: readonly Pt[], p: Pt): boolean {
  */
 export const FOUND_SHARE_MIN = 0.4;
 
+export interface TileArea {
+  /** 0/1: where the tiles go. */
+  area: Uint8Array;
+  /** The share of the inside of the corners the wall finder labelled as the surface. */
+  found: number;
+  /** What `cover` came to. */
+  cover: 'found' | 'corners';
+  /** The share of the inside of the corners left untiled. */
+  missed: number;
+}
+
 /**
  * Where a tiled surface's tiles go, as a 0/1 mask: inside its corners (`inside`), either where
- * the wall finder labelled that kind of surface, or everywhere. Also returns how much of the
- * inside the wall finder found, and which of the two `cover` came to.
+ * the wall finder labelled that kind of surface (plus `filled`, the bits of it the finder
+ * misread), or everywhere. `found` is measured on the finder's labels alone.
  */
-export function tileArea(labels: Uint8Array, label: number, inside: Uint8Array, cover: TileCover): { area: Uint8Array; found: number; cover: 'found' | 'corners' } {
+export function tileArea(labels: Uint8Array, label: number, inside: Uint8Array, cover: TileCover, filled?: Uint8Array): TileArea {
   let total = 0;
   let found = 0;
   for (let i = 0; i < inside.length; i++) {
@@ -144,6 +155,10 @@ export function tileArea(labels: Uint8Array, label: number, inside: Uint8Array, 
   const share = total > 0 ? found / total : 0;
   const resolved = cover === 'auto' ? (share >= FOUND_SHARE_MIN ? 'found' : 'corners') : cover;
   const area = new Uint8Array(inside.length);
-  for (let i = 0; i < inside.length; i++) area[i] = inside[i] && (resolved === 'corners' || labels[i] === label) ? 1 : 0;
-  return { area, found: share, cover: resolved };
+  let tiled = 0;
+  for (let i = 0; i < inside.length; i++) {
+    area[i] = inside[i] && (resolved === 'corners' || labels[i] === label || filled?.[i]) ? 1 : 0;
+    tiled += area[i]!;
+  }
+  return { area, found: share, cover: resolved, missed: total > 0 ? 1 - tiled / total : 0 };
 }

@@ -12,6 +12,9 @@ export type Painter = (u: number, v: number) => Label;
 /** A plain room: ceiling along the top, floor along the bottom, wall between. */
 export const PLAIN_ROOM: Painter = (_u, v) => (v < 0.08 ? CEILING : v > 0.78 ? FLOOR : WALL);
 
+/** A close-up of a wall: wall everywhere, running past every edge of the photo. */
+export const WHOLE_WALL: Painter = () => WALL;
+
 export class FakeSegmenter implements Segmenter {
   /**
    * @param cell the size of the fake model's cells in image pixels, like the real model's
@@ -39,8 +42,9 @@ export class FakeSegmenter implements Segmenter {
       }
     }
     const started = Date.now();
-    const labels = refine(probs, image, this.options);
-    return { width: image.width, height: image.height, labels, model: 'Fake segmenter', timings: { load: 0, run: 0, refine: Date.now() - started } };
+    const surfaceChance = new Uint8Array(image.width * image.height);
+    const labels = refine(probs, image, this.options, surfaceChance);
+    return { width: image.width, height: image.height, labels, surfaceChance, model: 'Fake segmenter', timings: { load: 0, run: 0, refine: Date.now() - started } };
   }
 
   dispose(): void {}

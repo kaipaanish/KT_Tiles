@@ -3,7 +3,7 @@ import { formatMm, layoutSurface, type Catalog, type LayoutResult } from '../eng
 import { COLOURS, pill } from '../render/renderer';
 import { TileCompositor, type Plane, type SurfaceScene, type TileFrame } from '../render/webgl/compositor';
 import type { TextureCache } from '../render/textureCache';
-import { FakeSegmenter } from '../segment/fakeSegmenter';
+import { FakeSegmenter, PLAIN_ROOM, WHOLE_WALL } from '../segment/fakeSegmenter';
 import { featherMask, labelMask, resizePlane } from '../segment/postprocess';
 import type { Backend } from '../segment/segformer';
 import { CEILING, FLOOR, WALL, type RGBAImage, type Segmentation, type Segmenter } from '../segment/segmenter';
@@ -18,9 +18,11 @@ import { CompareSlider } from './compare';
 import { loadPhoto, loadPhotoFromUrl, pickPhotoFile, type Photo } from './capture';
 import { insidePolygon, isConvexQuad, planeExtent, rasterPolygon, rectanglePlane, surfaceMatrix, surfaceOutline, tileArea } from './fit';
 import { FitCard } from './fitCard';
+import { meanOf, misreadPatches, misreadPixels, shareOf, superpixels, type Superpixels } from './holes';
 import { apply, invert, type Mat3, type Pt, type Quad } from './homography';
+import { findSegments, greyImage, linedRectangle, lockedCorner, rectangleAspect, scaleLines, wallLines, type Segment, type Vanishing } from './lines';
 import { drawLoupe } from './loupe';
-import { convexHull, fitQuad, regionAt, rowExtremes, type Mask } from './maskToQuad';
+import { convexHull, fitQuad, regionAt, rowExtremes, type Mask, type Side } from './maskToQuad';
 import { PhotoView, type PhotoTransform, type Sample } from './photoView';
 import { dragDeltaMm, pixelsPerMm } from './pointer';
 import { cssColour, labelShares, paintMask, paintRegions, REGION_STYLES, styleFor } from './regions';
@@ -33,6 +35,15 @@ export const WORK_SIDE = 1024;
 const SHADING_SIDE = 256;
 /** Blur radius for the lighting, as a share of SHADING_SIDE: about two tiles in a typical photo. */
 const SHADING_BLUR = 0.05;
+/** The wall's lines and the superpixels for misread patches are found at this size: plenty for both. */
+const ANALYSIS_SIDE = 512;
+/** Superpixels about this many pixels across at ANALYSIS_SIDE (some 1,500 in a photo). */
+const SUPERPIXEL_STEP = 12;
+/** Say so after Done when more than this share of the inside of the corners is left untiled. */
+const MISSED_HINT = 0.04;
+
+/** A wall's corners can't be read from its outline when it runs off the top and bottom of the photo, or off three sides. */
+const runsOff = (sides: readonly Side[]) => (sides.includes('top') && sides.includes('bottom')) || sides.length >= 3;
 
 export type SegmentStatus =
   | { state: 'idle' }
@@ -42,8 +53,8 @@ export type SegmentStatus =
   | { state: 'failed'; message: string };
 
 export interface PhotoModeOptions {
-  /** 'fake' skips the model (?segmenter=fake): a plain room layout, for quick checks. */
-  segmenter: 'model' | 'fake';
+  /** 'fake' skips the model (?segmenter=fake): a plain room layout, for quick checks; 'fake-wall', a wall filling the photo. */
+  segmenter: 'model' | 'fake' | 'fake-wall';
   backend: Backend;
   edges: 'guided' | 'bilinear';
   /** False skips WebGL (?webgl=0): the tile grid shows instead of tiles, as where WebGL2 is missing. */
@@ -73,6 +84,8 @@ interface SurfaceView {
   /** How much of the inside of the corners the wall finder found (0–1), and what the cover came to. */
   found: number;
   cover: 'found' | 'corners' | null;
+  /** How much of the inside of the corners is left untiled (0–1). */
+  missed: number;
   /** The area with the brush strokes applied: where tiles go. */
   edited: Mask | null;
   /** The region, tinted, for highlighting. */
@@ -96,24 +109,9 @@ interface CornerDrag {
 
 const megabytes = (bytes: number) => (bytes / 1e6).toFixed(1);
 
-/** The photo at the working size, as RGBA pixels. */
-function workingImage(photo: Photo): RGBAImage {
-  const scale = Math.min(1, WORK_SIDE / Math.max(photo.width, photo.height));
-  const width = Math.max(1, Math.round(photo.width * scale));
-  const height = Math.max(1, Math.round(photo.height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) throw new Error('Canvas 2D is not available');
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(photo.canvas, 0, 0, width, height);
-  return { width, height, data: ctx.getImageData(0, 0, width, height).data };
-}
-
-/** The photo at SHADING_SIDE on its long side. */
-function smallImage(photo: Photo): RGBAImage {
-  const scale = Math.min(1, SHADING_SIDE / Math.max(photo.width, photo.height));
+/** The photo at up to `side` pixels on its long side, as RGBA pixels. */
+function photoPixels(photo: Photo, side: number): RGBAImage {
+  const scale = Math.min(1, side / Math.max(photo.width, photo.height));
   const width = Math.max(1, Math.round(photo.width * scale));
   const height = Math.max(1, Math.round(photo.height * scale));
   const canvas = document.createElement('canvas');
@@ -164,6 +162,12 @@ export class PhotoMode {
   private regions: HTMLCanvasElement | null = null;
   /** The photo at SHADING_SIDE, for the lighting. */
   private small: RGBAImage | null = null;
+  /** The photo at ANALYSIS_SIDE, for the wall's lines and the superpixels. */
+  private analysis: RGBAImage | null = null;
+  /** The photo's straight lines, found the first time a wall needs them. */
+  private segments: Segment[] | null = null;
+  /** The photo's superpixels, made the first time a surface is tiled. */
+  private patches: Superpixels | null = null;
   private regionScratch: HTMLCanvasElement | null = null;
   private segmenter: Segmenter | null = null;
   private doc: DesignDoc;
@@ -380,12 +384,12 @@ export class PhotoMode {
     this.store.commit((d) => act.setTileCover(d, id, cover));
   }
 
-  /** For a tiled surface: its setting, what that came to, and how much of the inside the wall finder found. */
-  coverInfo(id: PhotoSurface['id']): { setting: TileCover; cover: 'found' | 'corners'; found: number } | null {
+  /** For a tiled surface: its setting, what that came to, how much of the inside the wall finder found, and how much is left untiled. */
+  coverInfo(id: PhotoSurface['id']): { setting: TileCover; cover: 'found' | 'corners'; found: number; missed: number } | null {
     const surface = photoSurface(this.doc, id);
     if (!surface || !surface.fit.confirmed) return null;
     const view = this.surfaceView(surface);
-    return view.cover ? { setting: surface.cover, cover: view.cover, found: view.found } : null;
+    return view.cover ? { setting: surface.cover, cover: view.cover, found: view.found, missed: view.missed } : null;
   }
 
   /** Takes away a surface's brush corrections (one undo step). */
@@ -419,7 +423,10 @@ export class PhotoMode {
     }
     this.photo = photo;
     this.regions = null;
-    this.small = smallImage(photo);
+    this.small = photoPixels(photo, SHADING_SIDE);
+    this.analysis = photoPixels(photo, ANALYSIS_SIDE);
+    this.segments = null;
+    this.patches = null;
     this.views.clear();
     // Surfaces belong to their photo; another photo starts with none.
     this.store.commit((d) => act.keepPhotoSurfaces(d, photo.id));
@@ -430,10 +437,12 @@ export class PhotoMode {
 
   private async segment(photo: Photo): Promise<void> {
     this.segmenter ??=
-      this.options.segmenter === 'fake' ? new FakeSegmenter() : new WorkerSegmenter({ backend: this.options.backend, edges: this.options.edges });
+      this.options.segmenter === 'model'
+        ? new WorkerSegmenter({ backend: this.options.backend, edges: this.options.edges })
+        : new FakeSegmenter(this.options.segmenter === 'fake-wall' ? WHOLE_WALL : PLAIN_ROOM);
     this.setStatus({ state: 'running' });
     try {
-      const segmentation = await this.segmenter.segment(workingImage(photo), (progress) => {
+      const segmentation = await this.segmenter.segment(photoPixels(photo, WORK_SIDE), (progress) => {
         if (this.photo !== photo) return;
         this.setStatus(progress.phase === 'download' ? { state: 'downloading', loaded: progress.loaded, total: progress.total } : { state: 'running' });
       });
@@ -479,15 +488,17 @@ export class PhotoMode {
       // Light, so the wall's own edges stay visible while its corners are placed.
       tint = paintMask(region.width, region.height, (i) => (region!.data[i] ? style : undefined), 0.6);
     }
-    // Once tiled, the tiles go inside the corners: where the wall finder found this kind of surface,
-    // or everywhere inside them when it found too little to trust (or the user says so).
+    // Once tiled, the tiles go inside the corners: where the wall finder found this kind of surface
+    // (with the bits of it it misread filled in), or everywhere inside them when it found too little
+    // to trust (or the user says so).
     let area: Mask | null = null;
     let found = 0;
     let cover: 'found' | 'corners' | null = null;
+    let missed = 0;
     const areaKey = outline ? `${surface.cover}|${outline.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(';')}` : '';
     if (!fitting && segmentation && this.photo && outline) {
       if (cached && cached.segmentation === segmentation && cached.areaKey === areaKey && cached.area) {
-        ({ area, found, cover } = cached);
+        ({ area, found, cover, missed } = cached);
       } else {
         const sx = segmentation.width / this.photo.width;
         const sy = segmentation.height / this.photo.height;
@@ -496,10 +507,12 @@ export class PhotoMode {
           segmentation.width,
           segmentation.height,
         );
-        const result = tileArea(segmentation.labels, label, inside, surface.cover);
+        const filled = surface.cover === 'corners' ? undefined : this.misread(segmentation, label, inside);
+        const result = tileArea(segmentation.labels, label, inside, surface.cover, filled);
         area = { width: segmentation.width, height: segmentation.height, data: result.area };
         found = result.found;
         cover = result.cover;
+        missed = result.missed;
       }
     }
     const sameArea = !!cached && !!area && cached.area === area;
@@ -534,7 +547,7 @@ export class PhotoMode {
         console.warn('Could not lay out the photo surface', error);
       }
     }
-    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, area, areaKey, found, cover, edited, tint, clip, mask, shading, result, grid };
+    const view: SurfaceView = { surface, segmentation, toPhoto, outline, region, area, areaKey, found, cover, missed, edited, tint, clip, mask, shading, result, grid };
     this.views.set(surface.id, view);
     return view;
   }
@@ -611,8 +624,76 @@ export class PhotoMode {
       this.hooks.toast('That part is already tiled. Tap another wall or the floor.');
       return;
     }
-    const quad = fit.quad.map((q) => ({ x: q.x / sx, y: q.y / sy })) as Quad;
-    this.store.commit((d) => act.addPhotoSurface(d, { photoId: photo.id, kind: label === WALL ? 'wall' : 'floor', seed: { x: p.x, y: p.y }, quad, starter: fit.starter }));
+    // A wall running past the photo's edges: its outline can't say which way it faces, but its lines can.
+    const lined = label === WALL && !fit.starter && region && runsOff(fit.offPhoto) ? this.linedStart(region, p) : null;
+    const quad = lined ? lined.quad : (fit.quad.map((q) => ({ x: q.x / sx, y: q.y / sy })) as Quad);
+    this.store.commit((d) =>
+      act.addPhotoSurface(d, {
+        photoId: photo.id,
+        kind: label === WALL ? 'wall' : 'floor',
+        seed: { x: p.x, y: p.y },
+        quad,
+        starter: fit.starter,
+        lined: lined ? { vanishing: lined.vanishing, size: lined.size } : undefined,
+      }),
+    );
+  }
+
+  /**
+   * For a wall that runs past the photo's edges: a rectangle around the tap along the wall's own
+   * lines, for the user to put on something of known size, and a first guess at that size (the
+   * wall's visible height taken as the designer's wall height, as corners on the photo's edges
+   * would). Null when the wall shows too few lines.
+   */
+  private linedStart(region: Mask, tap: Pt): { quad: Quad; vanishing: Vanishing; size: { w: number; h: number } } | null {
+    const photo = this.photo;
+    const analysis = this.analysis;
+    if (!photo || !analysis) return null;
+    this.segments ??= findSegments(greyImage(analysis));
+    // The wall's own lines, and its edges: segments whose middle is on the region or just off it.
+    const rx = region.width / analysis.width;
+    const ry = region.height / analysis.height;
+    const reach = Math.max(region.width, region.height) * 0.02;
+    const onRegion = (s: Segment) => {
+      const mx = ((s.a.x + s.b.x) / 2) * rx;
+      const my = ((s.a.y + s.b.y) / 2) * ry;
+      for (const dy of [-reach, 0, reach]) {
+        for (const dx of [-reach, 0, reach]) {
+          const x = Math.floor(mx + dx);
+          const y = Math.floor(my + dy);
+          if (x >= 0 && y >= 0 && x < region.width && y < region.height && region.data[y * region.width + x]) return true;
+        }
+      }
+      return false;
+    };
+    const ax = analysis.width / photo.width;
+    const ay = analysis.height / photo.height;
+    const at = { x: tap.x * ax, y: tap.y * ay };
+    const lines = wallLines(this.segments.filter(onRegion), analysis, at);
+    const rect = lines && linedRectangle(lines, at, analysis);
+    if (!lines || !rect) return null;
+    const vanishing = scaleLines(lines, 1 / ax, 1 / ay);
+    const quad = rect.map((q) => ({ x: q.x / ax, y: q.y / ay })) as Quad;
+    const aspect = rectangleAspect(quad, vanishing, photo) ?? 1;
+    const hull = convexHull(rowExtremes(region)).map((q) => ({ x: (q.x * photo.width) / region.width, y: (q.y * photo.height) / region.height }));
+    const toPlane = rectanglePlane(quad, { w: aspect, h: 1 });
+    const extent = toPlane && planeExtent([...quad, ...hull], toPlane, tap);
+    const visible = extent ? extent.maxY - extent.minY : 0;
+    const h = visible > 0 ? this.doc.wall.surface.heightMm / visible : 600;
+    const round10 = (mm: number) => Math.max(50, Math.round(mm / 10) * 10);
+    return { quad, vanishing: { h: vanishing.h, v: vanishing.v }, size: { w: round10(h * aspect), h: round10(h) } };
+  }
+
+  /** Bits of a surface inside its corners that the wall finder misread (working size, 0/1). */
+  private misread(segmentation: Segmentation, label: number, inside: Uint8Array): Uint8Array | undefined {
+    if (!this.analysis) return undefined;
+    const sp = (this.patches ??= superpixels(this.analysis, SUPERPIXEL_STEP));
+    const { width, height, surfaceChance } = segmentation;
+    // How much the model thought each patch some surface: a wall misread as floor is still a surface.
+    const belief = surfaceChance ? meanOf(sp, surfaceChance, width, height, 1 / 255) : null;
+    const surface = labelMask(segmentation.labels, label);
+    const state = misreadPatches(sp, shareOf(sp, surface, width, height), shareOf(sp, inside, width, height), belief);
+    return misreadPixels(sp, state, surface, inside, width, height);
   }
 
   /**
@@ -750,8 +831,13 @@ export class PhotoMode {
     const surface = this.activeSurface();
     if (!surface) return;
     const { widthMm, heightMm } = surface.plan.surface;
-    // A rectangle starts as the whole surface, so nothing moves until its real size is entered.
-    this.store.commit((d) => act.setPhotoFit(d, surface.id, marks === 'rectangle' ? { marks, rect: { x: 0, y: 0, w: widthMm, h: heightMm } } : { marks }));
+    const { quad, vanishing } = surface.fit;
+    // A rectangle starts as the whole surface, so nothing moves until its real size is entered; on
+    // a wall whose lines were found, its corners line up with them.
+    const lined = marks === 'rectangle' && vanishing ? lockedCorner(quad, 0, quad[0], vanishing) : null;
+    this.store.commit((d) =>
+      act.setPhotoFit(d, surface.id, marks === 'rectangle' ? { marks, rect: { x: 0, y: 0, w: widthMm, h: heightMm }, ...(lined ? { quad: lined } : {}) } : { marks }),
+    );
   }
 
   private setSize(patch: { w?: number; h?: number }): void {
@@ -795,13 +881,20 @@ export class PhotoMode {
     this.explainCover(surface.id);
   }
 
-  /** Says so when the tiles fill the corners because the wall finder found too little of the surface. */
+  /**
+   * Says so when the tiles fill the corners because the wall finder found too little of the
+   * surface, or when they leave a fair share of the inside of the corners untiled.
+   */
   private explainCover(id: PhotoSurface['id']): void {
     const info = this.coverInfo(id);
-    if (!info || info.setting !== 'auto' || info.cover !== 'corners') return;
+    if (!info) return;
     const surface = photoSurface(this.doc, id);
     const word = surface?.plan.layout.surface === 'floor' ? 'floor' : 'wall';
-    this.hooks.toast(`The wall finder found only ${Math.round(info.found * 100)}% of this ${word}, so the tiles fill your corners. Use Remove for anything in front.`);
+    if (info.setting === 'auto' && info.cover === 'corners') {
+      this.hooks.toast(`The wall finder found only ${Math.round(info.found * 100)}% of this ${word}, so the tiles fill your corners. Use Remove for anything in front.`);
+    } else if (info.cover === 'found' && info.missed > MISSED_HINT) {
+      this.hooks.toast(`Some spots inside the corners aren't tiled: things in front of the ${word}, or bits the wall finder missed. Use Add to brush tiles onto any that are ${word}.`);
+    }
   }
 
   // ---- Floating status, legend and fit card ---------------------------------------------------
@@ -838,7 +931,9 @@ export class PhotoMode {
         const word = fitting.plan.layout.surface === 'wall' ? 'wall' : 'floor';
         const hint =
           fitting.fit.marks === 'rectangle'
-            ? "Drag the corners to the rectangle's corners"
+            ? fitting.fit.vanishing
+              ? 'Put the corners on something you know the size of'
+              : "Drag the corners to the rectangle's corners"
             : fitting.fit.starter
               ? `Drag the corners to this ${word}'s edges`
               : `Corners found: adjust them to the ${word}'s edges if needed`;
@@ -888,6 +983,7 @@ export class PhotoMode {
       name: photoSurfaceName(this.doc, surface.id),
       kind: surface.plan.layout.surface,
       marks: surface.fit.marks,
+      lined: rectangle && !!surface.fit.vanishing,
       size: rectangle ? { w: surface.fit.rect.w, h: surface.fit.rect.h } : { w: surface.plan.surface.widthMm, h: surface.plan.surface.heightMm },
       valid: isConvexQuad(surface.fit.quad),
     });
@@ -919,6 +1015,12 @@ export class PhotoMode {
       const valid = isConvexQuad(surface.fit.quad);
       const corners = outline.map(toScreen);
       ctx.save();
+      if (!fitting) {
+        // A tiled surface's outline can run well past the photo (a wall bigger than it): show only the part on it.
+        ctx.beginPath();
+        ctx.rect(t.x - 2, t.y - 2, width + 4, height + 4);
+        ctx.clip();
+      }
       ctx.lineJoin = 'round';
       ctx.beginPath();
       corners.forEach((c, i) => (i === 0 ? ctx.moveTo(c.x, c.y) : ctx.lineTo(c.x, c.y)));
@@ -953,6 +1055,11 @@ export class PhotoMode {
     const W = result.widthMm;
     const top = result.tiledHeightMm;
     ctx.save();
+    if (this.photo) {
+      ctx.beginPath();
+      ctx.rect(t.x, t.y, this.photo.width * t.scale, this.photo.height * t.scale);
+      ctx.clip();
+    }
     ctx.setLineDash([7, 5]);
     ctx.lineWidth = 1.5;
     for (const guide of result.guides) {

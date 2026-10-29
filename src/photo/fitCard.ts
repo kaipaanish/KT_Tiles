@@ -6,6 +6,8 @@ export interface FitCardModel {
   name: string;
   kind: SurfaceType;
   marks: 'surface' | 'rectangle';
+  /** The rectangle follows the lines of a wall that runs past the photo's edges. */
+  lined: boolean;
   /** The size in the fields: the surface's, or the marked rectangle's. */
   size: { w: number; h: number };
   /** False while the corners cross over. */
@@ -41,7 +43,7 @@ export class FitCard {
       this.key = '';
       return;
     }
-    const key = `${model.name}|${model.kind}|${model.marks}`;
+    const key = `${model.name}|${model.kind}|${model.marks}|${model.lined}`;
     if (key !== this.key) {
       this.key = key;
       this.build(model);
@@ -79,7 +81,15 @@ export class FitCard {
     this.problem = h('p', { class: 'fit-problem', hidden: true }, 'The corners cross over. Drag them back into place.');
     const parts: (Node | null)[] = [
       h('div', { class: 'segmented fit-marks', role: 'group', 'aria-label': 'What the corners mark' }, marks('surface', `The ${surfaceWord}'s edges`), marks('rectangle', 'A known rectangle')),
-      rectangle ? h('p', { class: 'fit-note' }, `Put the corners on something of known size on this ${surfaceWord}, such as a door or a tile, and enter its size.`) : null,
+      rectangle
+        ? h(
+            'p',
+            { class: 'fit-note' },
+            model.lined
+              ? `This ${surfaceWord} runs past the photo, so its size can't be read from it. The corners follow its lines: put them on something you know the size of, such as a tile or a door, and enter its size.`
+              : `Put the corners on something of known size on this ${surfaceWord}, such as a door or a tile, and enter its size.`,
+          )
+        : null,
       h('div', { class: 'fit-size' }, w.el, hgt.el),
       this.problem,
       h(

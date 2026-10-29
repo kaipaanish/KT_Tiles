@@ -24,6 +24,7 @@ import {
   type SurfaceType,
 } from '../engine';
 import type { Pt, Quad } from '../photo/homography';
+import { lockedCorner, type Vanishing } from '../photo/lines';
 import {
   activeFloor,
   activeKind,
@@ -400,6 +401,11 @@ export interface NewPhotoSurface {
   /** Starting corners, in photo pixels. */
   quad: Quad;
   starter: boolean;
+  /**
+   * For a wall running past the photo's edges: the corners mark a rectangle along its lines
+   * instead of its edges, with a first guess at the rectangle's size (mm).
+   */
+  lined?: { vanishing: Vanishing; size: { w: number; h: number } };
 }
 
 /**
@@ -414,10 +420,11 @@ export function addPhotoSurface(doc: DesignDoc, input: NewPhotoSurface): DesignD
   const plan = structuredClone({ ...base, overrides: {} });
   const fit: PhotoFit = {
     quad: input.quad,
-    marks: 'surface',
-    rect: { x: 0, y: 0, w: plan.surface.widthMm, h: plan.surface.heightMm },
+    marks: input.lined ? 'rectangle' : 'surface',
+    rect: input.lined ? { x: 0, y: 0, ...input.lined.size } : { x: 0, y: 0, w: plan.surface.widthMm, h: plan.surface.heightMm },
     confirmed: false,
     starter: input.starter,
+    vanishing: input.lined?.vanishing ?? null,
   };
   return { ...doc, active: id, photo: [...doc.photo, { id, photoId: input.photoId, seed: input.seed, plan, fit, strokes: [], cover: 'auto' as const }] };
 }
@@ -430,11 +437,19 @@ export function setPhotoFit(doc: DesignDoc, id: PhotoSurfaceId, patch: Partial<P
   return { ...doc, photo: doc.photo.map((s) => (s === surface ? { ...s, fit } : s)) };
 }
 
-/** Moves one corner (0 bottom-left, 1 bottom-right, 2 top-right, 3 top-left) to a photo pixel. */
+/**
+ * Moves one corner (0 bottom-left, 1 bottom-right, 2 top-right, 3 top-left) to a photo pixel. A
+ * rectangle on a wall whose lines were found stays along them: two more corners slide with it.
+ */
 export function movePhotoCorner(doc: DesignDoc, id: PhotoSurfaceId, corner: number, to: Pt): DesignDoc {
   const surface = photoSurface(doc, id);
   if (!surface || corner < 0 || corner > 3) return doc;
-  const quad = surface.fit.quad.map((p, i) => (i === corner ? { x: to.x, y: to.y } : p)) as Quad;
+  const { fit } = surface;
+  if (fit.marks === 'rectangle' && fit.vanishing) {
+    const quad = lockedCorner(fit.quad, corner, to, fit.vanishing);
+    return quad ? setPhotoFit(doc, id, { quad }) : doc;
+  }
+  const quad = fit.quad.map((p, i) => (i === corner ? { x: to.x, y: to.y } : p)) as Quad;
   return setPhotoFit(doc, id, { quad });
 }
 

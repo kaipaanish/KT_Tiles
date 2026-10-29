@@ -15,6 +15,7 @@ import {
 } from '../engine';
 import type { TileCover } from '../photo/fit';
 import type { Pt, Quad } from '../photo/homography';
+import type { Vanishing } from '../photo/lines';
 
 export type { TileCover };
 
@@ -54,6 +55,11 @@ export interface PhotoFit {
   confirmed: boolean;
   /** The corners started as a rough rectangle around the tap, because the region wasn't one quadrilateral. */
   starter: boolean;
+  /**
+   * Where the wall's own lines meet, found when it runs past the photo's edges. While the corners
+   * mark a rectangle, they keep to these lines as they are dragged.
+   */
+  vanishing: Vanishing | null;
 }
 
 /** A brush stroke on a photo surface's mask: where tiles are added or taken away. */

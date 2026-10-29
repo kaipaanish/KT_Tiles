@@ -23,10 +23,43 @@ export interface QuadFit {
    * starter around the tap, for the user to drag to the wall's edges.
    */
   starter: boolean;
+  /** The photo's edges the region runs off: there, the quad's side is the photo's, not the surface's. */
+  offPhoto: Side[];
 }
+
+export type Side = 'top' | 'bottom' | 'left' | 'right';
 
 /** Above this, a region is too far from a single quadrilateral to force one. */
 export const QUAD_MISMATCH_LIMIT = 0.15;
+
+/**
+ * A region runs off an edge of the photo when it reaches at least this share of that edge. Not
+ * half: things in front, or patches the wall finder misread, often cover much of the edge.
+ */
+export const OFF_PHOTO_SHARE = 0.3;
+
+/** The photo's edges a region runs off (reaching at least OFF_PHOTO_SHARE of the edge). */
+export function offPhotoSides(region: Mask): Side[] {
+  const { width, height, data } = region;
+  let top = 0;
+  let bottom = 0;
+  let left = 0;
+  let right = 0;
+  for (let x = 0; x < width; x++) {
+    top += data[x] ? 1 : 0;
+    bottom += data[(height - 1) * width + x] ? 1 : 0;
+  }
+  for (let y = 0; y < height; y++) {
+    left += data[y * width] ? 1 : 0;
+    right += data[y * width + width - 1] ? 1 : 0;
+  }
+  const sides: Side[] = [];
+  if (top >= width * OFF_PHOTO_SHARE) sides.push('top');
+  if (bottom >= width * OFF_PHOTO_SHARE) sides.push('bottom');
+  if (left >= height * OFF_PHOTO_SHARE) sides.push('left');
+  if (right >= height * OFF_PHOTO_SHARE) sides.push('right');
+  return sides;
+}
 
 export function emptyMask(width: number, height: number): Mask {
   return { width, height, data: new Uint8Array(width * height) };
@@ -380,6 +413,7 @@ export function fitQuad(mask: Mask, tap: Pt, exclude?: Mask): QuadFit | null {
   if (!corners) return null;
   const quad = orderCorners(refineCorners(hull, corners));
   const mismatch = quadMismatch(solid, quad);
-  if (mismatch <= QUAD_MISMATCH_LIMIT) return { quad, mismatch, starter: false };
-  return { quad: starterQuad(solid, tap), mismatch, starter: true };
+  const offPhoto = offPhotoSides(solid);
+  if (mismatch <= QUAD_MISMATCH_LIMIT) return { quad, mismatch, starter: false, offPhoto };
+  return { quad: starterQuad(solid, tap), mismatch, starter: true, offPhoto };
 }

@@ -60,18 +60,54 @@
   display: none;
 }
 
-.ar-status {
+/* What to do next, the marked surface's size and count, then tracking, over the camera. */
+.ar-top {
   margin: 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
+}
+
+.ar-instruction {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.ar-info {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.ar-status {
+  opacity: 0.85;
 }
 
 .ar-controls {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
   gap: 10px;
-  padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+  padding: 16px 12px max(16px, env(safe-area-inset-bottom));
+}
+
+/* Only the buttons catch taps; a tap between them marks a corner like anywhere else. */
+.ar-controls button {
   pointer-events: auto;
+}
+
+.ar-modes,
+.ar-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.ar-modes .pill-button.is-on {
+  background: #1f2937;
+  border-color: #1f2937;
+  color: #fff;
 }

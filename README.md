@@ -12,7 +12,9 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 3a, a first AR test, is done; see the [checklist](#step-3-checklist). On the user's Android phone AR started with every feature (depth, lighting, anchors, plane detection), found a wall and the floor, kept placed tiles anchored, and ran at 30 fps.
+- Step 3 (live AR) is under way; see the [checklist](#step-3-checklist).
+  - 3a was a test on the user's Android phone. AR started with every feature (depth, lighting, anchors, plane detection), found a wall and the floor, kept placed tiles anchored, and ran at 30 fps.
+  - 3b marks a real wall or floor by its corners and tiles it at its measured size. You can slide the pattern and switch series, and the result carries to the designer. It is verified with a stand-in for WebXR and needs trying on the phone.
 - Step 2 is complete in the browser; see the [checklist](#step-2-checklist). Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, a brush corrects where tiles go, a before/after line compares, and Share sends the photo with its tiles. Still to try on a real phone: the camera, WhatsApp, and timings.
 
 ## Using it
@@ -82,21 +84,26 @@ The tiles then appear on the surface in perspective, behind fixtures, keeping th
 
 Photos stay on the device. They are never uploaded and never saved, so closing the page loses them. While a photo has surfaces that haven't been shared, the browser asks before you leave the page.
 
-### AR test (step 3a)
+### AR (step 3)
 
-**AR** in the top bar opens the AR test screen (`?view=ar`). It needs Chrome on an Android phone with Google Play Services for AR; elsewhere it says so.
+**AR** in the top bar opens AR (`?view=ar`). It needs Chrome on an Android phone with Google Play Services for AR; elsewhere it says so.
 
 1. **Start AR** opens the camera.
-2. Move the phone slowly over a wall or the floor until a ring appears on it: blue on a wall, orange on the floor.
-3. Tap to place a 1 m square of your design there (the wall's or the floor's, as saved in the designer). **Undo**, **Clear** and **Exit AR** are at the bottom.
+2. Move the phone slowly over the surface until a ring appears on it: blue on a wall, orange on the floor.
+3. Choose what to mark, then aim the ring and tap:
+   - **Wall**: tap one corner of the area to tile, then the opposite corner.
+   - **Floor**: tap two corners along one edge (along a wall, say), then a point on the opposite edge.
+   - **Wall by its base**, for a plain wall the phone can't find: tap where the wall meets the floor at each end, then its top.
 
-Text at the top reports what the phone granted and how tracking is going:
-- the features (hit test, overlay, anchors, plane detection, depth, lighting);
-- tracking;
-- what the ring is on and how far away;
-- the surfaces found, the squares placed (anchored or not), and the frame rate.
+   After the first tap, the ring stays on the surface being marked, and an outline shows the area so far. **Back** takes back a corner, and **Start over** begins again.
+4. The area is tiled at its measured size with your design, and anchored, so it stays put as you walk around.
 
-After **Exit AR**, the same report stays on the screen.
+Over the camera you see the size, the series, and the tiles and boxes needed. Then:
+- **Drag on the tiles** to slide the pattern, with the designer's snapping.
+- **Series** switches series; on a wall, **Preset** switches the band layout.
+- **Mark again** starts a new surface.
+
+The measured size, series, preset and pattern are saved as you go. **Back to the designer** opens the designer on that wall or floor, with the Count tab. Text at the top also shows tracking and the frame rate. The report stays on the phone after **Exit AR** (or a crash), together with the features the phone granted.
 
 ## Run and test
 
@@ -144,7 +151,7 @@ These open the app on a particular design, for demos and checks:
 | `backend` | `wasm` | Run the wall finder on WASM even where WebGPU is available, for comparison |
 | `edges` | `bilinear` | Turn off the photo-guided edges, for comparison |
 | `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks. `fake-wall`: a wall filling the photo |
-| `view` | `ar` | The AR test screen (step 3a) |
+| `view` | `ar` | AR (step 3) |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 | `fresh` | `1` | Start from the default design instead of the autosaved one |
 
@@ -557,6 +564,28 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - The likely cause: the code deleted the session's anchors and cancelled its hit test after the session had ended. Ending the session releases both anyway, so they are now left alone.
     - The report is saved on the phone every second and at the end, so it shows again after a crash and a reload. It is text only: no camera image is ever kept.
 
+**Step 3b: tiling a real wall or floor in AR**
+
+95. **Surfaces are marked by tapping corners, aiming with the ring in the middle of the screen.**
+    - A wall takes two opposite corners. After the first, the ring follows where the aim meets that wall's plane, so the top corner can be marked even where the phone finds no features (near a ceiling, say).
+    - A floor takes two corners along one edge, then a point on the opposite edge. The design's "up" runs from that edge towards the third point.
+    - A plain wall the phone can't find takes two points where it meets the floor, then its top. The phone found 3 level surfaces but only 1 wall on its first test, so this matters.
+    - Sizes are rounded to 10 mm. Anything under 100 mm is taken as a slip of the finger.
+96. **The marked surface rides on its first corner's anchor**, created at the first tap, so it stays put as tracking corrects itself.
+97. **Dragging slides the pattern with the designer's own action and snapping.**
+    - The finger's ray, from WebXR's touch input, is met with the surface's plane.
+    - The drag uses the same `dragPattern` as the designer and photo mode, with a 40 mm magnet.
+98. **AR still has its own screen; it shares the saved design rather than living inside the app's views.**
+    - It reads the saved design and writes back the measured size, series, preset and pattern as they change.
+    - So the designer opens with them, on its Count tab.
+    - The plan was to make AR part of the app. This gets the same result with a much smaller change. Merging the screens can wait until AR needs the designer's tabs.
+99. **The stand-in for WebXR now models a room**: a wall 2 m ahead and the floor, a camera that can be aimed, and finger drags. `ar-fake` uses it to check, in order:
+    - marking a wall by its corners, and a floor tap in Wall mode being refused;
+    - the tiles' pixels, inside the marked area and outside it;
+    - a drag moving the pattern, and a series switch;
+    - a plain wall marked by its base;
+    - the designer opening with the measured wall and the series chosen in AR.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -596,7 +625,7 @@ The wall finder on the sample, in headless desktop Chrome: WebGPU fp16 about 3 s
 
 ## Step 3 checklist
 
-Step 3a is a test on a real phone; its answers shape 3b (the real thing) and 3c (realism).
+Step 3a tested AR on a real phone. 3b tiles a real wall or floor. 3c (realism: things in front, lighting, a picture to share) comes next.
 
 | Item | Status | Evidence |
 | --- | --- | --- |
@@ -605,4 +634,7 @@ Step 3a is a test on a real phone; its answers shape 3b (the real thing) and 3c 
 | A tap places a 1 m square of the design, drawn in perspective with grout, and it stays put while walking around | Done on the user's phone: 3 squares placed, all anchored, and they stayed put | `ar-fake` reads the GPU's pixel beside the ring before and after the tap; unit tests for the surface frames, the mm-to-metre placement and anchors |
 | The phone's features (depth, lighting, anchors, plane detection) and frame rate are known | Done on the user's phone | Granted: hit test, anchors, plane detection, light estimation, DOM overlay, and depth sensing (CPU, luminance-alpha). 30 fps with tracking "good". The first try crashed Chrome on Exit AR (decision 94); fixed |
 | Where AR can't run, the screen says what it needs | Done | `ar-unsupported` (headless Chrome on a laptop) |
-| All tests pass, including steps 1 and 2 | Done | `npm test`: 207 tests. Browser check: 68 pages, no console errors |
+| 3b: mark a real wall by two corners (a floor by three points, a plain wall by its base) and see it tiled at its measured size, anchored | Verified with the stand-in; **phone to try** | `ar-fake`: the measured 1.20 × 1.00 m wall is tiled where marked and nowhere else; a 1.60 × 2.20 m wall by its base. Unit tests for every way of marking |
+| 3b: drag on the tiles slides the pattern with the designer's snapping; Series and Preset switch | Verified with the stand-in; **phone to try** | `ar-fake` drags 150 mm and the pattern moves; Series switches to Demo Azure Medallion |
+| 3b: the measured surface and design carry to the designer and its Count tab | Done | `ar-fake` opens the designer afterwards: wall 1600 × 2200 mm, in the series chosen in AR |
+| All tests pass, including steps 1 and 2 | Done | `npm test`: 214 tests. Browser check: 68 pages, no console errors |

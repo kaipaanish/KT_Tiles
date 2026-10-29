@@ -171,10 +171,12 @@ const press = (page, device, selector) => (device === 'phone' ? page.locator(sel
 const alignX = (s) => s.doc.wall.alignment.x;
 
 /**
- * A stand-in for WebXR, run in the page before the app (headless Chrome has no AR): the camera
- * 1.5 m up looking ahead, and a wall 2 m away that every hit test finds. Its layer draws into the
- * app's own canvas, shown in a corner, and after each frame it reads back one pixel to the right
- * of the middle, where a placed square's tiles should be. `__fakeXr.session.select()` taps.
+ * A stand-in for WebXR, run in the page before the app (headless Chrome has no AR): a room with a
+ * wall 2 m ahead (z = −2, facing the camera) and the floor (y = 0), and a camera 1.5 m up that
+ * `__fakeXr.aimAt([x, y, z])` turns towards a point. Hit tests find the nearest of the wall and the
+ * floor along the camera's ray. `select()` taps; `touchAt(point)`, `selectstart()` and `selectend()`
+ * drag a finger. Its layer draws into the app's own canvas, shown in a corner, and after each
+ * frame it reads back the pixel in the middle and one near the top (`__fakeXr.pixels`).
  */
 function fakeWebXr() {
   const W = 600;
@@ -183,28 +185,82 @@ function fakeWebXr() {
   const far = 100;
   const f = 1 / Math.tan(Math.PI / 6);
   const projection = new Float32Array([f / (W / H), 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
-  const camera = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.5, 0, 1]);
-  const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1.5, 0, 1]);
-  // The hit's y axis is the wall's normal, towards the camera.
-  const wall = new Float32Array([1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1.5, -2, 1]);
-  const state = { gl: null, session: null, init: null, anchors: new Set(), pixel: null };
+  const eye = [0, 1.5, 0];
+  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null };
   window.__fakeXr = state;
-  const pose = (matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, inverse: { matrix: view } } });
+  const norm = (v) => {
+    const l = Math.hypot(...v);
+    return v.map((c) => c / l);
+  };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  /** A pose at `from` with its −z axis towards `to`, and its inverse (for a view matrix). */
+  const lookAt = (from, to) => {
+    const forward = norm(to.map((c, i) => c - from[i]));
+    const right = norm(cross(forward, [0, 1, 0]));
+    const up = cross(right, forward);
+    const m = new Float32Array([...right, 0, ...up, 0, ...forward.map((c) => -c), 0, ...from, 1]);
+    const inverse = new Float32Array(16);
+    for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) inverse[c * 4 + r] = m[r * 4 + c];
+    for (let r = 0; r < 3; r++) inverse[12 + r] = -(inverse[r] * from[0] + inverse[4 + r] * from[1] + inverse[8 + r] * from[2]);
+    inverse[15] = 1;
+    return { m, inverse };
+  };
+  state.aimAt = (to) => {
+    const { m, inverse } = lookAt(eye, to);
+    state.camera = m;
+    state.view = inverse;
+  };
+  state.aimAt([0, 1.5, -2]);
+  state.touchAt = (to) => {
+    state.touch = to ? lookAt(eye, to).m : null;
+  };
+  const planes = [
+    { point: [0, 0, -2], normal: [0, 0, 1] },
+    { point: [0, 0, 0], normal: [0, 1, 0] },
+  ];
+  /** The nearest surface along a pose's ray, as WebXR gives it: y along the normal. */
+  const hitFrom = (m) => {
+    const o = [m[12], m[13], m[14]];
+    const d = [-m[8], -m[9], -m[10]];
+    let best = null;
+    for (const plane of planes) {
+      const facing = d[0] * plane.normal[0] + d[1] * plane.normal[1] + d[2] * plane.normal[2];
+      if (Math.abs(facing) < 1e-6) continue;
+      const t = ((plane.point[0] - o[0]) * plane.normal[0] + (plane.point[1] - o[1]) * plane.normal[1] + (plane.point[2] - o[2]) * plane.normal[2]) / facing;
+      if (t > 0 && (!best || t < best.t)) best = { t, plane };
+    }
+    if (!best) return null;
+    const at = o.map((c, i) => c + d[i] * best.t);
+    const n = best.plane.normal;
+    const x = [1, 0, 0];
+    return new Float32Array([...x, 0, ...n, 0, ...cross(x, n), 0, ...at, 1]);
+  };
+  const pose = (matrix, inverse = matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, inverse: { matrix: inverse } } });
+  const touchSpace = {};
+  const inputSource = { targetRayMode: 'screen', targetRaySpace: touchSpace };
   const frame = (session) => ({
     session,
-    getViewerPose: () => ({ ...pose(camera), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: view } } }] }),
-    getHitTestResults: () => [
-      {
-        getPose: () => pose(wall),
-        createAnchor: () => {
-          const anchor = { anchorSpace: {}, delete: () => state.anchors.delete(anchor) };
-          state.anchors.add(anchor);
-          return Promise.resolve(anchor);
+    getViewerPose: () => ({ ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: state.view } } }] }),
+    getHitTestResults: () => {
+      const m = hitFrom(state.camera);
+      if (!m) return [];
+      return [
+        {
+          getPose: () => pose(m),
+          createAnchor: () => {
+            const anchor = { anchorSpace: {}, delete: () => state.anchors.delete(anchor) };
+            state.anchors.set(anchor, m);
+            return Promise.resolve(anchor);
+          },
         },
-      },
-    ],
-    getPose: () => pose(wall),
-    trackedAnchors: state.anchors,
+      ];
+    },
+    getPose: (space) => {
+      if (space === touchSpace) return state.touch ? pose(state.touch) : null;
+      for (const [anchor, m] of state.anchors) if (anchor.anchorSpace === space) return pose(m);
+      return null;
+    },
+    trackedAnchors: new Set(state.anchors.keys()),
     detectedPlanes: new Set([{ orientation: 'vertical' }, { orientation: 'horizontal' }]),
   });
   class FakeSession extends EventTarget {
@@ -223,9 +279,12 @@ function fakeWebXr() {
         if (this.ended) return;
         callback(performance.now(), frame(this));
         const gl = state.gl;
-        const out = new Uint8Array(4);
-        gl.readPixels(W / 2 + 90, H / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
-        state.pixel = Array.from(out);
+        const read = (x, y) => {
+          const out = new Uint8Array(4);
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+          return Array.from(out);
+        };
+        state.pixels = { centre: read(W / 2, H / 2), top: read(W / 2, H - 30) };
       }, 16);
       return 1;
     }
@@ -234,10 +293,21 @@ function fakeWebXr() {
       this.dispatchEvent(new Event('end'));
       return Promise.resolve();
     }
-    select() {
-      const event = new Event('select');
+    fire(type) {
+      const event = new Event(type);
       event.frame = frame(this);
+      event.inputSource = inputSource;
       this.dispatchEvent(event);
+    }
+    select() {
+      this.fire('select');
+    }
+    selectstart() {
+      this.fire('selectstart');
+    }
+    selectend() {
+      this.fire('selectend');
+      this.fire('select');
     }
   }
   window.XRWebGLLayer = class {
@@ -245,7 +315,7 @@ function fakeWebXr() {
       state.gl = gl;
       gl.canvas.width = W;
       gl.canvas.height = H;
-      gl.canvas.style.cssText = 'position:fixed;right:8px;bottom:96px;width:240px;height:320px;pointer-events:none;outline:1px solid #999';
+      gl.canvas.style.cssText = 'position:fixed;right:8px;bottom:120px;width:240px;height:320px;pointer-events:none;outline:1px solid #999';
       document.body.append(gl.canvas);
       this.framebuffer = null;
     }
@@ -1433,36 +1503,101 @@ export const scenarios = [
     },
   },
   {
-    // With a stand-in for WebXR: the session starts with hit test and the overlay, aims at the
-    // wall, and a tap places an anchored square of tiles that the GPU draws where expected.
+    // With a stand-in for WebXR (a wall 2 m ahead and the floor): mark a wall by two corners, see
+    // it tiled where marked and nowhere else, slide the pattern with a finger, switch series; then
+    // mark a plain wall by its base; the designer opens with the measured wall.
     name: 'ar-fake',
     path: './?view=ar',
     init: fakeWebXr,
     async run(page, { device, shot }) {
+      const statusHas = (text, timeout = 3000) => page.waitForFunction((t) => document.querySelector('.ar-overlay')?.textContent?.includes(t), text, { timeout });
+      const frames = () => pause(120);
+      const savedDesign = () => page.evaluate(() => JSON.parse(localStorage.getItem('kt-tile-designer:design:v1') ?? 'null'));
+      const aimAt = async (point) => {
+        await page.evaluate((p) => window.__fakeXr.aimAt(p), point);
+        await frames();
+      };
+      const tap = async () => {
+        await page.evaluate(() => window.__fakeXr.session.select());
+        await frames();
+      };
+
       await page.locator('.ar-support:text-is("This phone can run AR.")').waitFor({ timeout: 5000 });
       await press(page, device, '.ar-actions button:text-is("Start AR")');
-      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Aiming at: wall, 2.00 m away'), null, { timeout: 5000 });
+      await statusHas('Aiming at: wall, 2.00 m away', 5000);
       const init = await page.evaluate(() => window.__fakeXr.init);
       assert(init.requiredFeatures.includes('hit-test') && init.optionalFeatures.includes('anchors') && init.domOverlay, `asks for hit test, anchors and the overlay: ${JSON.stringify(init.optionalFeatures)}`);
-      const before = await page.evaluate(() => window.__fakeXr.pixel);
-      assert(before?.[3] === 0, `nothing drawn beside the ring before a tap (${before})`);
-      await page.evaluate(() => window.__fakeXr.session.select());
-      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Placed: 1 (1 anchored)'), null, { timeout: 5000 });
-      await pause(100);
-      const after = await page.evaluate(() => window.__fakeXr.pixel);
-      assert(after?.[3] === 255 && after[0] + after[1] + after[2] > 150, `the square's tiles are drawn beside the ring (${after})`);
-      await shot('placed');
-      await press(page, device, '.ar-controls button:text-is("Undo")');
-      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Placed: 0'), null, { timeout: 3000 });
+      await statusHas('Wall: aim the ring at one corner');
+
+      // Aimed at the floor in Wall mode: says so, and marks nothing.
+      await aimAt([0, 0, -1]);
+      await tap();
+      await statusHas("That's the floor, not a wall");
+
+      // A wall 1.2 m wide and 1 m high, from (−0.6, 1.0) to (0.6, 2.0) on the wall.
+      await aimAt([-0.6, 1.0, -2]);
+      await tap();
+      await statusHas('Now aim at the opposite corner');
+      await aimAt([0.6, 2.0, -2]);
+      await shot('marking');
+      await tap();
+      await statusHas('Wall 1.20 × 1.00 m · Demo Ivory Bloom');
+      await statusHas('Drag on the tiles to slide the pattern.');
+      const wall = (await savedDesign()).wall;
+      assert(wall.surface.widthMm === 1200 && wall.surface.heightMm === 1000, `the measured size is saved for the designer: ${JSON.stringify(wall.surface)}`);
+
+      // Tiles where the wall was marked, and nothing above it.
+      await aimAt([0, 1.5, -2]);
+      const { centre, top } = await page.evaluate(() => window.__fakeXr.pixels);
+      assert(centre[3] === 255 && centre[0] + centre[1] + centre[2] > 150, `tiles in the marked area (${centre})`);
+      assert(top[3] === 0, `nothing above it (${top})`);
+      await shot('tiled');
+
+      // A finger dragged 150 mm to the right slides the pattern.
+      const before = wall.alignment;
+      await page.evaluate(() => {
+        window.__fakeXr.touchAt([0, 1.5, -2]);
+        window.__fakeXr.session.selectstart();
+      });
+      await frames();
+      await page.evaluate(() => window.__fakeXr.touchAt([0.15, 1.5, -2]));
+      await frames();
+      await page.evaluate(() => window.__fakeXr.session.selectend());
+      await frames();
+      const after = (await savedDesign()).wall.alignment;
+      assert(JSON.stringify(after) !== JSON.stringify(before), `the drag moved the pattern: ${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+      await statusHas('Wall 1.20 × 1.00 m', 2000);
+
+      // Another series, saved too.
+      await press(page, device, '.ar-controls button:text-is("Series")');
+      await statusHas('Wall 1.20 × 1.00 m · Demo Azure Medallion');
+      assert((await savedDesign()).wall.layout.seriesId === 'demo-azure-medallion', 'the series is saved');
+
+      // A plain wall by its base: two points where it meets the floor (just in front of the wall), then its top.
+      await press(page, device, '.ar-controls button:text-is("Mark again")');
+      await press(page, device, '.ar-modes button:text-is("Wall by its base")');
+      await statusHas('Plain wall: aim where the wall meets the floor');
+      await aimAt([-0.8, 0, -1.95]);
+      await tap();
+      await statusHas('Now where it meets the floor at the other end');
+      await aimAt([0.8, 0, -1.95]);
+      await tap();
+      await statusHas('Now aim at the top of the wall');
+      await aimAt([0, 2.2, -1.95]);
+      await tap();
+      await statusHas('Wall 1.60 × 2.20 m');
+
+      // The designer opens on the measured wall, with the series chosen in AR.
       await press(page, device, '.ar-controls button:text-is("Exit AR")');
       await page.locator('.ar-report:has-text("Last session:")').waitFor({ timeout: 3000 });
-      assert((await page.locator('.ar-report').textContent()).includes('Features granted: hit-test, dom-overlay, anchors, plane-detection'), 'the report lists the features');
+      assert((await page.locator('.ar-report').textContent()).includes('Wall 1.60 × 2.20 m'), 'the report has the last surface');
       await shot('report');
-      // The report is kept on the phone: after a crash and a reload, it's still there.
-      await page.reload();
-      await page.waitForSelector('body[data-ready="true"]', { timeout: 5000 });
-      const kept = (await page.locator('.ar-report').textContent()) ?? '';
-      assert(kept.startsWith('Last session (') && kept.includes('Placed: 0') && kept.includes('Features granted: hit-test'), `the report survives a reload: "${kept.slice(0, 80)}"`);
+      await page.goto(new URL('./?debug=1&tab=count', page.url()).href);
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 10000 });
+      const designer = await page.evaluate(() => window.ktDebug.state().doc);
+      assert(designer.active === 'wall' && designer.wall.surface.widthMm === 1600 && designer.wall.surface.heightMm === 2200, `the designer has the measured wall: ${JSON.stringify(designer.wall.surface)}`);
+      assert(designer.wall.layout.seriesId === 'demo-azure-medallion', 'and the series chosen in AR');
+      await shot('designer');
     },
   },
 ];

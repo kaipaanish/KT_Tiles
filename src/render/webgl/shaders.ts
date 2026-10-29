@@ -135,6 +135,37 @@ void main() {
 }
 `;
 
+/** AR: a rectangle being marked, a unit square in the model's x–y plane. */
+export const RECT_VERTEX = `#version 300 es
+uniform mat4 u_projection;
+uniform mat4 u_view;
+uniform mat4 u_model;
+in vec2 a_corner;
+out vec2 v_at;
+void main() {
+  gl_Position = u_projection * u_view * u_model * vec4(a_corner, 0.0, 1.0);
+  v_at = a_corner;
+}
+`;
+
+/** AR: the rectangle's outline (a few pixels wide however far) over a light fill, premultiplied. */
+export const RECT_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec3 u_colour;
+uniform vec2 u_size;
+in vec2 v_at;
+out vec4 outColor;
+void main() {
+  vec2 m = v_at * u_size;
+  vec2 rest = u_size - m;
+  float d = min(min(m.x, rest.x), min(m.y, rest.y));
+  float px = max(fwidth(d), 1e-6);
+  float line = 1.0 - smoothstep(2.0 * px, 3.0 * px, d);
+  float alpha = max(line * 0.95, 0.2);
+  outColor = vec4(u_colour * alpha, alpha);
+}
+`;
+
 /** AR: a ring with a dot in the middle, in one colour, premultiplied. */
 export const RETICLE_FRAGMENT = `#version 300 es
 precision highp float;

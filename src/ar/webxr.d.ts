@@ -40,8 +40,14 @@ interface XRSession extends EventTarget {
   requestAnimationFrame(callback: (time: number, frame: XRFrame) => void): number;
   end(): Promise<void>;
   addEventListener(type: 'end', listener: () => void): void;
-  addEventListener(type: 'select', listener: (event: XRInputSourceEvent) => void): void;
+  addEventListener(type: 'select' | 'selectstart' | 'selectend', listener: (event: XRInputSourceEvent) => void): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject): void;
+}
+
+/** A touch on the screen, in handheld AR: its target ray runs from the camera through the finger. */
+interface XRInputSource {
+  readonly targetRayMode: 'gaze' | 'tracked-pointer' | 'screen' | 'transient-pointer';
+  readonly targetRaySpace: XRSpace;
 }
 
 interface XRSpace extends EventTarget {}
@@ -98,6 +104,7 @@ interface XRFrame {
 
 interface XRInputSourceEvent extends Event {
   readonly frame: XRFrame;
+  readonly inputSource: XRInputSource;
 }
 
 interface XRViewport {

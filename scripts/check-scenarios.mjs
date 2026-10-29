@@ -177,9 +177,10 @@ const alignX = (s) => s.doc.wall.alignment.x;
  * floor along the camera's ray. `select()` taps; `touchAt(point)`, `selectstart()` and `selectend()`
  * drag a finger. Its depth sensor sees the real room: the wall, the floor and `__fakeXr.box` (a
  * thing in front), while `__fakeXr.wallError` puts the phone's own estimate of the wall that far
- * in front of the real one. Its layer draws into the app's own canvas, shown in a corner, and after
- * each frame it reads back three pixels: the middle, one near the top and one to the left of the
- * middle (`__fakeXr.pixels`).
+ * in front of the real one. Its light estimate is even ambient light reflecting `__fakeXr.light`
+ * (0.5: half), and its camera's picture is plain blue (70, 130, 200). Its layer draws into the
+ * app's own canvas, shown in a corner, and after each frame it reads back three pixels: the
+ * middle, one near the top and one to the left of the middle (`__fakeXr.pixels`).
  */
 function fakeWebXr() {
   const W = 600;
@@ -189,7 +190,7 @@ function fakeWebXr() {
   const f = 1 / Math.tan(Math.PI / 6);
   const projection = new Float32Array([f / (W / H), 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
   const eye = [0, 1.5, 0];
-  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null, wallError: 0, box: null };
+  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null, wallError: 0, box: null, light: 0.5 };
   window.__fakeXr = state;
   const norm = (v) => {
     const l = Math.hypot(...v);
@@ -283,7 +284,15 @@ function fakeWebXr() {
     session,
     getViewerPose: () => {
       if (!animation) throw new DOMException('getViewerPose can only be called on frames passed to a callback of requestAnimationFrame()', 'InvalidStateError');
-      return { ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { matrix: state.camera, inverse: { matrix: state.view } } }] };
+      return { ...pose(state.camera, state.view), views: [{ eye: 'none', camera: { width: W, height: H }, projectionMatrix: projection, transform: { matrix: state.camera, inverse: { matrix: state.view } } }] };
+    },
+    // Even ambient light: the first coefficient alone, set so a matt surface reflects `light`.
+    getLightEstimate: () => {
+      if (!animation) throw new DOMException('getLightEstimate can only be called on frames passed to a callback of requestAnimationFrame()', 'InvalidStateError');
+      const level = (state.light * Math.PI) / 0.886227;
+      const sh = new Float32Array(27);
+      sh.set([level, level, level]);
+      return { sphericalHarmonicsCoefficients: sh, primaryLightDirection: { x: 0, y: 1, z: 0, w: 0 }, primaryLightIntensity: { x: 0, y: 0, z: 0, w: 1 } };
     },
     // A 60 × 80 depth picture (3:4, like the view), two bytes per reading in millimetres.
     getDepthInformation: () => {
@@ -323,7 +332,7 @@ function fakeWebXr() {
     detectedPlanes: new Set([{ orientation: 'vertical' }, { orientation: 'horizontal' }]),
   });
   class FakeSession extends EventTarget {
-    enabledFeatures = ['hit-test', 'dom-overlay', 'anchors', 'plane-detection', 'depth-sensing'];
+    enabledFeatures = ['hit-test', 'dom-overlay', 'anchors', 'plane-detection', 'light-estimation', 'depth-sensing', 'camera-access'];
     domOverlayState = { type: 'screen' };
     depthUsage = 'cpu-optimized';
     depthDataFormat = 'luminance-alpha';
@@ -334,6 +343,9 @@ function fakeWebXr() {
     }
     requestHitTestSource() {
       return Promise.resolve({ cancel() {} });
+    }
+    requestLightProbe() {
+      return Promise.resolve({});
     }
     requestAnimationFrame(callback) {
       setTimeout(() => {
@@ -382,6 +394,23 @@ function fakeWebXr() {
     }
     getViewport() {
       return { x: 0, y: 0, width: W, height: H };
+    }
+  };
+  window.XRWebGLBinding = class {
+    constructor(session, gl) {
+      this.gl = gl;
+      this.texture = null;
+    }
+    getCameraImage() {
+      const gl = this.gl;
+      if (!this.texture) {
+        this.texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([70, 130, 200, 255]));
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      }
+      return this.texture;
     }
   };
   WebGL2RenderingContext.prototype.makeXRCompatible = () => Promise.resolve();
@@ -1577,7 +1606,7 @@ export const scenarios = [
           await page.waitForFunction((t) => document.querySelector('.ar-overlay')?.textContent?.includes(t), text, { timeout });
         } catch {
           const shown = await page.evaluate(() => document.querySelector('.ar-overlay')?.innerText ?? '');
-          throw new Error(`waited for "${text}"; the screen says: ${shown.replace(/s+/g, ' ')}`);
+          throw new Error(`waited for "${text}"; the screen says: ${shown.replace(/\s+/g, ' ')}`);
         }
       };
       const frames = () => pause(120);
@@ -1608,12 +1637,22 @@ export const scenarios = [
       await page.evaluate(() => {
         window.__fakeXr.wallError = 0.05;
       });
+      // Each tap comes with a jolt (the aim jumps as the finger lands): the corner is where the
+      // aim was just before.
+      const tapWithJolt = async (jolt) => {
+        await pause(400);
+        await page.evaluate((p) => {
+          window.__fakeXr.aimAt(p);
+          window.__fakeXr.session.select();
+        }, jolt);
+        await frames();
+      };
       await aimAt([-0.6, 1.0, -1.95]);
-      await tap();
+      await tapWithJolt([-0.45, 1.15, -1.95]);
       await statusHas('Now aim at the opposite corner');
       await aimAt([0.6, 2.0, -1.95]);
       await shot('marking');
-      await tap();
+      await tapWithJolt([0.5, 2.1, -1.95]);
       await statusHas('Wall 1.20 × 1.00 m · Demo Ivory Bloom');
       await statusHas('Drag on the tiles to slide the pattern.');
       await statusHas('Moved onto the wall by 5 cm (checked with depth).');
@@ -1658,9 +1697,41 @@ export const scenarios = [
       assert(JSON.stringify(after) !== JSON.stringify(before), `the drag moved the pattern: ${JSON.stringify(before)} → ${JSON.stringify(after)}`);
       await statusHas('Wall 1.20 × 1.00 m', 2000);
 
+      // The room's light: half the light reflected darkens the tiles; Light: off undoes it.
+      await aimAt([0, 1.5, -2]);
+      await statusHas("Light: ×0.84 from the room's light");
+      const brightness = (px) => px[0] + px[1] + px[2];
+      const lit = brightness((await page.evaluate(() => window.__fakeXr.pixels)).centre);
+      await press(page, device, '.ar-controls button:text-is("Light: on")');
+      await pause(600);
+      const unlit = brightness((await page.evaluate(() => window.__fakeXr.pixels)).centre);
+      assert(lit < unlit * 0.9, `the room's light darkens the tiles (${lit} with it, ${unlit} without)`);
+      await press(page, device, '.ar-controls button:text-is("Light: off")');
+
+      // Corners: drag the top-right corner 10 cm in and 10 cm down.
+      await press(page, device, '.ar-controls button:text-is("Corners")');
+      await statusHas('Drag a corner');
+      await page.evaluate(() => {
+        window.__fakeXr.touchAt([0.6, 2.0, -2]);
+        window.__fakeXr.session.selectstart();
+      });
+      await frames();
+      await page.evaluate(() => window.__fakeXr.touchAt([0.5, 1.9, -2]));
+      await frames();
+      await page.evaluate(() => window.__fakeXr.session.selectend());
+      await frames();
+      await statusHas('Wall 1.10 × 0.90 m');
+      await shot('corners');
+      await press(page, device, '.ar-controls button:text-is("Done")');
+      assert((await savedDesign()).wall.surface.widthMm === 1100, 'the adjusted size is saved');
+
+      // A picture: the camera's picture with the tiles over it, kept for after the session.
+      await press(page, device, '.ar-controls button:text-is("Picture")');
+      await statusHas('Picture taken (1)');
+
       // Another series, saved too.
       await press(page, device, '.ar-controls button:text-is("Series")');
-      await statusHas('Wall 1.20 × 1.00 m · Demo Azure Medallion');
+      await statusHas('Wall 1.10 × 0.90 m · Demo Azure Medallion');
       assert((await savedDesign()).wall.layout.seriesId === 'demo-azure-medallion', 'the series is saved');
 
       // A plain wall by its base: two points where it meets the floor (just in front of the wall), then its top.
@@ -1684,6 +1755,24 @@ export const scenarios = [
       await press(page, device, '.ar-controls button:text-is("Exit AR")');
       await page.locator('.ar-report:has-text("Last session:")').waitFor({ timeout: 3000 });
       assert((await page.locator('.ar-report').textContent()).includes('Wall 1.60 × 2.20 m'), 'the report has the last surface');
+      // The picture: the camera's blue at the top, tiles in the middle; and Share.
+      const picture = await page.evaluate(async () => {
+        const img = document.querySelector('.ar-pictures img');
+        if (!img) return null;
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0);
+        const at = (x, y) => Array.from(g.getImageData(Math.round(x * c.width), Math.round(y * c.height), 1, 1).data);
+        return { top: at(0.5, 0.03), centre: at(0.5, 0.5), size: [c.width, c.height] };
+      });
+      assert(picture, 'the picture is shown after the session');
+      const blue = (px) => px[2] > 170 && px[0] < 110;
+      assert(blue(picture.top), `the camera's picture at the top (${picture.top})`);
+      assert(!blue(picture.centre) && picture.centre[0] > 120, `tiles in the middle (${picture.centre})`);
+      assert((await page.locator('.ar-pictures button:text-is("Share")').count()) === 1, 'a Share button for it');
       await shot('report');
       await page.goto(new URL('./?debug=1&tab=count', page.url()).href);
       await page.waitForSelector('body[data-ready="true"]', { timeout: 10000 });

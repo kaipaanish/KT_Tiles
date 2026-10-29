@@ -1,6 +1,6 @@
 import type { LayoutResult } from '../../engine';
 import type { TextureCache } from '../textureCache';
-import { AR_TILE_FRAGMENT, AR_TILE_VERTEX, RECT_FRAGMENT, RECT_VERTEX, RETICLE_FRAGMENT, RETICLE_VERTEX } from './shaders';
+import { AR_TILE_FRAGMENT, AR_TILE_VERTEX, CAMERA_FRAGMENT, CAMERA_VERTEX, RECT_FRAGMENT, RECT_VERTEX, RETICLE_FRAGMENT, RETICLE_VERTEX } from './shaders';
 import { deleteBatches, hexColour, linkProgram, meshAttributes, TileTextures, uploadBatches, type BatchGl, type MeshAttributes } from './tileGl';
 
 type Rgb = [number, number, number];
@@ -57,6 +57,7 @@ interface TileLocations extends MeshAttributes {
   rawToMeters: WebGLUniformLocation | null;
   viewportAt: WebGLUniformLocation | null;
   depthMode: WebGLUniformLocation | null;
+  light: WebGLUniformLocation | null;
 }
 
 interface ShapeProgram {
@@ -80,6 +81,7 @@ export class ArRenderer {
   private readonly at: TileLocations | null = null;
   private readonly ring: ShapeProgram | null;
   private readonly rect: ShapeProgram | null;
+  private readonly camera: ShapeProgram | null;
   private readonly tiles: TileTextures;
   private readonly meshes = new Map<LayoutResult, BatchGl[]>();
   private depthTexture: WebGLTexture | null = null;
@@ -105,11 +107,13 @@ export class ArRenderer {
         rawToMeters: gl.getUniformLocation(p, 'u_rawToMeters'),
         viewportAt: gl.getUniformLocation(p, 'u_viewport'),
         depthMode: gl.getUniformLocation(p, 'u_depthMode'),
+        light: gl.getUniformLocation(p, 'u_light'),
       };
     }
     // Two triangles: the ring's square spans −1…1, the rectangle's 0…1.
     this.ring = this.shape(RETICLE_VERTEX, RETICLE_FRAGMENT, 'AR ring', [-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]);
     this.rect = this.shape(RECT_VERTEX, RECT_FRAGMENT, 'AR rectangle', [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1]);
+    this.camera = this.shape(CAMERA_VERTEX, CAMERA_FRAGMENT, 'AR camera', [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1]);
   }
 
   get available(): boolean {
@@ -144,7 +148,7 @@ export class ArRenderer {
    * Draws one view (projection and view matrices from WebXR) into the current viewport. With the
    * view's depth picture, tiles behind real things aren't drawn.
    */
-  draw(projection: Float32Array, view: Float32Array, scene: ArScene, look: { groutMm: number; groutColor: string }, depth: ArDepth | null = null): void {
+  draw(projection: Float32Array, view: Float32Array, scene: ArScene, look: { groutMm: number; groutColor: string; light?: [number, number, number] }, depth: ArDepth | null = null): void {
     const gl = this.gl;
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
@@ -158,6 +162,7 @@ export class ArRenderer {
       gl.uniform3fv(at.grout, hexColour(look.groutColor));
       gl.uniform1f(at.groutMm, look.groutMm);
       gl.uniform1i(at.tile, 0);
+      gl.uniform3fv(at.light, look.light ?? [1, 1, 1]);
       gl.uniform1i(at.depth, 1);
       gl.uniform1i(at.depthMode, depth ? (depth.float ? 2 : 1) : 0);
       if (depth) {
@@ -192,6 +197,21 @@ export class ArRenderer {
     };
     shapes(this.rect, scene.rects);
     shapes(this.ring, scene.rings);
+    gl.bindVertexArray(null);
+  }
+
+  /** The camera's picture filling the current viewport, for an AR picture (drawn before the scene). */
+  drawCamera(texture: WebGLTexture): void {
+    const gl = this.gl;
+    const shape = this.camera;
+    if (!shape) return;
+    gl.disable(gl.BLEND);
+    gl.useProgram(shape.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(gl.getUniformLocation(shape.program, 'u_camera'), 0);
+    gl.bindVertexArray(shape.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, shape.count);
     gl.bindVertexArray(null);
   }
 

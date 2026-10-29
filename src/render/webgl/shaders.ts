@@ -122,6 +122,7 @@ uniform mat4 u_depthUv;
 uniform float u_rawToMeters;
 uniform vec4 u_viewport;
 uniform int u_depthMode;
+uniform vec3 u_light;
 in vec2 v_local;
 in vec2 v_uv;
 flat in vec2 v_size;
@@ -150,6 +151,8 @@ void main() {
   if (shown <= 0.0) discard;
   vec3 colour = texture(u_tile, v_uv).rgb;
   colour = mix(colour, u_grout, groutAmount(v_local, v_size, v_joints, u_groutMm));
+  // The room's light on this surface (1 where there's no estimate).
+  colour *= u_light;
   outColor = vec4(colour * shown, shown);
 }
 `;
@@ -198,18 +201,50 @@ void main() {
 }
 `;
 
-/** AR: a ring with a dot in the middle, in one colour, premultiplied. */
+/**
+ * AR: a ring with a crosshair and a dot in the middle, in one colour over a dark edge so it shows
+ * on white walls, premultiplied. The crosshair's lines are a pixel or two wide however far.
+ */
 export const RETICLE_FRAGMENT = `#version 300 es
 precision highp float;
 uniform vec3 u_colour;
 in vec2 v_at;
 out vec4 outColor;
+float line(float across, float along) {
+  float px = max(fwidth(across), 1e-6);
+  return (1.0 - smoothstep(px, 2.0 * px, abs(across))) * step(0.22, abs(along)) * step(abs(along), 0.75);
+}
 void main() {
   float r = length(v_at);
   float aa = fwidth(r);
-  float ring = smoothstep(0.72 - aa, 0.72, r) * (1.0 - smoothstep(0.92, 0.92 + aa, r));
-  float centre = 1.0 - smoothstep(0.12, 0.12 + aa, r);
-  float alpha = max(ring, centre) * 0.95;
-  outColor = vec4(u_colour * alpha, alpha);
+  float ring = smoothstep(0.86 - aa, 0.86, r) * (1.0 - smoothstep(0.97, 0.97 + aa, r));
+  float halo = smoothstep(0.80 - aa, 0.80, r) * (1.0 - smoothstep(1.0 - aa, 1.0, r));
+  float crosshair = max(line(v_at.y, v_at.x), line(v_at.x, v_at.y));
+  float centre = 1.0 - smoothstep(0.06, 0.06 + aa, r);
+  float mark = max(max(ring, crosshair), centre);
+  // A thin dark edge outside the ring keeps it visible on light surfaces.
+  float edge = max(halo - ring, 0.0) * 0.5;
+  float alpha = max(mark * 0.95, edge);
+  outColor = vec4(u_colour * mark * 0.95, alpha);
+}
+`;
+
+/** AR pictures: the camera's picture as the background, filling the view. */
+export const CAMERA_VERTEX = `#version 300 es
+in vec2 a_corner;
+out vec2 v_uv;
+void main() {
+  gl_Position = vec4(a_corner * 2.0 - 1.0, 0.0, 1.0);
+  v_uv = a_corner;
+}
+`;
+
+export const CAMERA_FRAGMENT = `#version 300 es
+precision highp float;
+uniform sampler2D u_camera;
+in vec2 v_uv;
+out vec4 outColor;
+void main() {
+  outColor = vec4(texture(u_camera, v_uv).rgb, 1.0);
 }
 `;

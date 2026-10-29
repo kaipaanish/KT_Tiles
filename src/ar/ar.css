@@ -106,8 +106,27 @@
   gap: 8px;
 }
 
-.ar-modes .pill-button.is-on {
+.ar-modes .pill-button.is-on,
+.ar-row .pill-button.is-on {
   background: #1f2937;
   border-color: #1f2937;
   color: #fff;
+}
+
+/* Pictures taken in AR, shown after the session. */
+.ar-pictures h2 {
+  margin: 24px 0 4px;
+  font-size: 18px;
+}
+
+.ar-picture {
+  margin: 12px 0;
+}
+
+.ar-picture img {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  margin-bottom: 8px;
+  border-radius: 8px;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { floorFromCorners, intersectPlane, onFrame, poseRay, surfaceMm, wallFromBase, wallFromCorners, wallUpTo } from './marking';
+import { cornersMm, floorFromCorners, intersectPlane, moveCorner, nearestCorner, onFrame, poseRay, steadyAim, surfaceMm, wallFromBase, wallFromCorners, wallUpTo } from './marking';
 import { surfaceFrame, surfaceToRoom, transformPoint, type Vec3 } from './surfaceFrame';
 
 const close = (a: readonly number[], b: readonly number[], digits = 6) => a.forEach((v, i) => expect(v).toBeCloseTo(b[i]!, digits));
@@ -80,5 +80,47 @@ describe('dragging on a surface', () => {
     const origin = onFrame(wall.frame, [-1, 0.1, -2]);
     expect(origin.x).toBeCloseTo(0, 6);
     expect(origin.y).toBeCloseTo(0, 6);
+  });
+});
+
+describe('steadier taps', () => {
+  it('takes the aim from just before the tap, not the jolt as the finger lands', () => {
+    // Steady at x = 0.5 until 60 ms before the tap, then the jolt.
+    const samples = [0, 33, 66, 100, 133, 166, 200, 233, 266, 300, 333, 366, 400].map((t) => ({ t, p: (t > 340 ? [0.58, 1.5, -2] : [0.5, 1.5, -2]) as Vec3 }));
+    close(steadyAim(samples, 400)!, [0.5, 1.5, -2]);
+    // Held still with a little tremble: the average.
+    const trembling = [100, 133, 166, 200, 233, 266, 300].map((t, i) => ({ t, p: [0.5 + (i % 2 ? 0.004 : -0.004), 1.5, -2] as Vec3 }));
+    close(steadyAim(trembling, 400)!, [0.5 - 0.004 / 7, 1.5, -2]);
+    // No samples before the tap: no steady aim (the caller takes the latest).
+    expect(steadyAim(samples.slice(-2), 400)).toBeNull();
+  });
+
+  it('takes the last aim before the jolt when the phone was still moving', () => {
+    // Swinging 5 cm a frame towards x = 0.8 until just before the tap.
+    const moving = [100, 133, 166, 200, 233, 266, 300].map((t, i) => ({ t, p: [0.5 + i * 0.05, 1.5, -2] as Vec3 }));
+    close(steadyAim(moving, 400)!, [0.8, 1.5, -2]);
+  });
+});
+
+describe('adjusting a marked surface by its corners', () => {
+  const wall = wallFromCorners(surfaceFrame(wallHit(-1, 0.1), viewer), [1.4, 2.8, -2])!;
+
+  it('finds the corner near a touch', () => {
+    expect(nearestCorner(wall, { x: 2380, y: 2690 }, 150)).toBe(2);
+    expect(nearestCorner(wall, { x: 30, y: -20 }, 150)).toBe(0);
+    expect(nearestCorner(wall, { x: 1200, y: 1350 }, 150)).toBeNull();
+  });
+
+  it('moves one corner and keeps the opposite one', () => {
+    // The top-right corner 100 mm in and 200 mm down.
+    const smaller = moveCorner(wall, 2, { x: 2300, y: 2500 })!;
+    expect([smaller.widthMm, smaller.heightMm]).toEqual([2300, 2500]);
+    close(smaller.frame.origin, wall.frame.origin);
+    // The bottom-left corner 50 mm left and 100 mm up: the origin moves with it.
+    const moved = moveCorner(wall, 0, { x: -50, y: 100 })!;
+    expect([moved.widthMm, moved.heightMm]).toEqual([2450, 2600]);
+    close(moved.frame.origin, [-1.05, 0.2, -2]);
+    expect(cornersMm(moved)[2]).toEqual({ x: 2450, y: 2600 });
+    expect(moveCorner(wall, 2, { x: 50, y: 2700 })).toBeNull();
   });
 });

@@ -101,7 +101,12 @@ Photos stay on the device. They are never uploaded and never saved, so closing t
 Over the camera you see the size, the series, and the tiles and boxes needed. Then:
 - **Drag on the tiles** to slide the pattern, with the designer's snapping.
 - **Series** switches series; on a wall, **Preset** switches the band layout.
+- **Corners** shows a white ring on each corner. Drag one to fine-tune the area; the opposite corner stays put. **Done** goes back to sliding the pattern.
+- **Light: on/off** turns the room's light on the tiles on or off (on to start).
+- **Picture** takes a picture of the camera view with the tiles. Pictures stay on the phone until you leave the page; after **Exit AR** each one has a **Share** button.
 - **Mark again** starts a new surface.
+
+Taps use where the ring was just before your finger landed, so the jolt of tapping doesn't move the corner. Things in front of the tiles (a foot, a basin) show in front of them. Right after marking, the tiles are moved onto the real surface using the phone's depth sensor.
 
 The measured size, series, preset and pattern are saved as you go. **Back to the designer** opens the designer on that wall or floor, with the Count tab. Text at the top also shows tracking and the frame rate. The report stays on the phone after **Exit AR** (or a crash), together with the features the phone granted.
 
@@ -611,6 +616,34 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - with the estimate 5 cm out, the tiles are moved onto the wall by 5 cm;
     - with a box in front, there are no tiles over it but tiles beside it, and they come back when the box goes.
 
+**Marking more precisely, light, pictures**
+
+106. **A tap marks where the aim was just before the finger landed.**
+    - The user found pinpointing corners hard, and the tap itself jolts the phone.
+    - The aim is kept for the last 600 ms. A tap takes the aim points from 350 to 80 ms before it. If they are within 2 cm of each other, the phone was held still and their average is used; otherwise it takes the last of them.
+    - In `ar-fake` every tap comes with a jolt, and the corners still land where the aim was.
+107. **The marked area's corners can be adjusted afterwards.**
+    - **Corners** puts a white ring on each corner. A drag that starts within 20 cm of one moves it, and the opposite corner stays put.
+    - The size, count and saved design follow.
+    - Getting close to a corner while dragging gives finer control than aiming from afar.
+108. **The aim marker is a crosshair:** a 6 cm ring with a crosshair and a centre dot, a pixel or two wide at any distance, with a thin dark edge so it shows on white walls.
+109. **The room's light falls on the tiles.**
+    - WebXR's light estimate gives the ambient light (spherical harmonics) and the main light. The app works out the light a matt surface facing the tiles' way would reflect.
+    - That light is converted to the colours as drawn and kept between 0.45 and 1.35. It is applied at 60% and eased over a few frames so it doesn't flicker.
+    - **Light** turns it off, and the screen shows the factor.
+    - It is one factor per surface: shadows across a wall would need the camera's picture every frame, as photo mode uses.
+    - How the estimate's scale compares with the camera picture on a real phone is still to be seen. It may need tuning.
+110. **Pictures need camera access, and it can't cost anything else.**
+    - The session asks for camera access first. The next attempt is exactly what the phone granted before, so a refusal leaves the rest as it was.
+    - **Picture** draws the camera's picture and the tiles into an offscreen framebuffer, during the frame (the only time the camera's picture is there). It is read back at up to 1600 px and kept in memory only.
+    - After Exit AR it is shown with **Share**, which adds the same summary strip as photo mode's pictures.
+    - Without camera access, the screen suggests a screenshot instead.
+    - Whether the camera's picture comes out the right way up on a phone is still to be seen.
+111. **The stand-in has a light estimate and a camera picture.**
+    - Its light estimate reflects half the light. With Light on, the tiles must be at least 10% darker than with it off.
+    - Its camera picture is plain blue. A picture must have the blue at the top and tiles in the middle.
+    - `ar-fake` also drags a corner (1.20 × 1.00 m becomes 1.10 × 0.90 m) and checks the size is saved.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -665,4 +698,7 @@ Step 3a tested AR on a real phone. 3b tiles a real wall or floor. 3c (realism: t
 | 3b on the phone: walls and floors marked and tiled, measured sizes right | Done on the user's phone | A wall and a floor tiled at about 30 fps. One real 450 × 300 mm tile measured 470 × 320 mm, within aiming precision (decision 104) |
 | 3c: things in front (a foot, a basin) show in front of the tiles | Verified with the stand-in; **phone to try** | `ar-fake`: no tiles over a box in front of the wall, tiles beside it (decision 101) |
 | 3c: tiles sit on the real surface, not in front of it | Verified with the stand-in; **phone to try** | `ar-fake`: a wall estimate 5 cm out is corrected by 5 cm with depth (decision 102); unit tests for the depth maths |
-| All tests pass, including steps 1 and 2 | Done | `npm test`: 220 tests. Browser check: 68 pages, no console errors |
+| 3c: marking is steadier and corners can be fine-tuned | Verified with the stand-in; **phone to try** | `ar-fake`: taps with a jolt still mark where the aim was; a corner dragged 10 cm changes the size (decisions 106–108); unit tests |
+| 3c: the room's light on the tiles | Verified with the stand-in; **phone to try** | `ar-fake`: Light on darkens the tiles in a half-lit room, off undoes it (decision 109); unit tests for the light maths |
+| 3c: a picture of the AR view to share | Verified with the stand-in; **phone to try** | `ar-fake`: the picture has the camera's picture and the tiles, and a Share button after the session (decision 110) |
+| All tests pass, including steps 1 and 2 | Done | `npm test`: 227 tests. Browser check: 68 pages, no console errors |

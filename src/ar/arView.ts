@@ -12,21 +12,29 @@
 import './ar.css';
 import { catalog } from '../designs/catalog';
 import { countTiles, layoutSurface, presetsFor, type LayoutResult, type Point } from '../engine';
-import { ArRenderer, type ArDepth, type ArRect, type ArRing } from '../render/webgl/arRenderer';
+import { ArRenderer, type ArDepth, type ArRect, type ArRing, type ArScene } from '../render/webgl/arRenderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
 import { activePlan, type DesignDoc } from '../state/document';
 import { DESIGN_KEY, serializeDesign, writeStorage } from '../state/persist';
 import { openingDesign } from '../ui/app';
 import { h } from '../ui/dom';
+import { photoShareContent, sharePhoto, type ShareContent } from '../ui/share';
 import { distanceToPlane, fromDepth, samplePoints, shifted, surfaceOffset, toNormView } from './depth';
-import { floorFromCorners, intersectPlane, poseRay, rectOn, ringOn, surfaceMm, wallFromBase, wallFromCorners, wallUpTo, type MarkedSurface, type Ray } from './marking';
-import { invertPose, multiply, surfaceFrame, surfaceToRoom, type SurfaceFrame, type SurfaceKind, type Vec3 } from './surfaceFrame';
+import { surfaceLight, tileGain } from './lighting';
+import { cornersMm, floorFromCorners, intersectPlane, moveCorner, nearestCorner, poseRay, rectOn, ringOn, steadyAim, surfaceMm, wallFromBase, wallFromCorners, wallUpTo, type MarkedSurface, type Ray } from './marking';
+import { invertPose, multiply, surfaceFrame, surfaceToRoom, transformPoint, type SurfaceFrame, type SurfaceKind, type Vec3 } from './surfaceFrame';
 import { checkArSupport, startArSession } from './xrSession';
 
 /** The aiming ring's radius, and a marked corner's, in metres. */
-const AIM_M = 0.08;
-const CORNER_M = 0.05;
+const AIM_M = 0.06;
+const CORNER_M = 0.04;
+/** How much of the room's estimated light shows on the tiles when Light is on. */
+const LIGHT_AMOUNT = 0.6;
+/** A touch this close (mm) to a corner of the tiled surface grabs it, while adjusting corners. */
+const GRAB_MM = 200;
+/** AR pictures are kept at most this many pixels on their long side. */
+const PICTURE_SIDE = 1600;
 /** How close (mm) a dragged pattern must come to a magnet to jump to it. */
 const MAGNET_MM = 40;
 
@@ -83,6 +91,24 @@ export function startAr(root: HTMLElement): void {
   const support = h('p', { class: 'ar-support' }, 'Checking whether this phone can run AR…');
   const start = h('button', { type: 'button', class: 'pill-button primary', disabled: true }, 'Start AR');
   const report = h('pre', { class: 'ar-report', hidden: true });
+  /** Pictures taken in AR: in memory only, shared or saved after the session. */
+  const pictures: { canvas: HTMLCanvasElement; content: ShareContent }[] = [];
+  const gallery = h('div', { class: 'ar-pictures', hidden: true });
+  const showPictures = () => {
+    gallery.hidden = pictures.length === 0;
+    gallery.replaceChildren(
+      h('h2', {}, 'Pictures from AR'),
+      h('p', { class: 'ar-design' }, 'Kept on this phone until you leave the page. Share sends one with its tiles and boxes.'),
+      ...pictures.map((picture, i) =>
+        h(
+          'figure',
+          { class: 'ar-picture' },
+          h('img', { src: picture.canvas.toDataURL('image/jpeg', 0.85), alt: `AR picture ${i + 1}` }),
+          h('button', { type: 'button', class: 'pill-button primary', onclick: () => void sharePhoto(picture.canvas, picture.content) }, 'Share'),
+        ),
+      ),
+    );
+  };
   const design = h('p', { class: 'ar-design' });
   const showDesign = () => {
     design.textContent = `Wall: ${seriesName('wall')} · Floor: ${seriesName('floor')}. The size you mark and any changes are saved for the designer.`;
@@ -101,6 +127,7 @@ export function startAr(root: HTMLElement): void {
     support,
     h('div', { class: 'ar-actions' }, start, h('a', { class: 'pill-button', href: './?tab=count' }, 'Back to the designer')),
     report,
+    gallery,
   );
 
   // ---- What shows over the camera during a session (WebXR's DOM overlay)
@@ -181,7 +208,22 @@ export function startAr(root: HTMLElement): void {
     let result: LayoutResult | null = null;
     let resultPlan: unknown = null;
     let presetIndex = -1;
-    let drag: { source: XRInputSource; from: Point; start: { origin: Point; overrides: DesignDoc['wall']['overrides']; tile: { w: number; h: number } }; doc: DesignDoc } | null = null;
+    /** A finger on the tiled surface: sliding the pattern, or (while adjusting) moving a corner. */
+    let drag:
+      | { kind: 'pattern'; source: XRInputSource; from: Point; start: { origin: Point; overrides: DesignDoc['wall']['overrides']; tile: { w: number; h: number } }; doc: DesignDoc }
+      | { kind: 'corner'; source: XRInputSource; corner: number; surface: MarkedSurface }
+      | null = null;
+    let adjusting = false;
+    /** Recent aim points, to mark a corner where the aim was just before the tap jolted the phone. */
+    const aimSamples: { t: number; p: Vec3; step: Step }[] = [];
+    // The room's light: the phone's estimate, eased in, on the tiles.
+    let lightAmount = LIGHT_AMOUNT;
+    let lightGain: [number, number, number] = [1, 1, 1];
+    let lightReport = 'no estimate yet';
+    const probe = xr.requestLightProbe ? await xr.requestLightProbe().catch(() => null) : null;
+    // Pictures need the camera's picture, which only camera access gives.
+    const binding = typeof XRWebGLBinding !== 'undefined' && features?.includes('camera-access') ? new XRWebGLBinding(xr, gl) : null;
+    let wantPicture = false;
 
     let viewer: Vec3 = [0, 0, 0];
     let aimRay: Ray | null = null;
@@ -214,12 +256,17 @@ export function startAr(root: HTMLElement): void {
       showDesign();
     }
 
-    function tile(surface: MarkedSurface): void {
+    /** Puts the tiles on a marked surface: its size into the design, and its place relative to the anchor. */
+    function place(surface: MarkedSurface): void {
       doc = act.setActive(doc, surface.kind);
       doc = act.setSurfaceSize(doc, surface.kind === 'wall' ? { widthMm: surface.widthMm, heightMm: surface.heightMm, tiledHeightMm: surface.heightMm } : { widthMm: surface.widthMm, heightMm: surface.heightMm });
       step = { step: 'tiled', surface };
-      const model = surfaceToRoom(surface.frame, { x: 0, y: 0 });
-      local = anchor && anchorPose ? multiply(invertPose(anchorPose), model) : null;
+      local = anchor && anchorPose ? multiply(invertPose(anchorPose), surfaceToRoom(surface.frame, { x: 0, y: 0 })) : null;
+    }
+
+    function tile(surface: MarkedSurface): void {
+      place(surface);
+      adjusting = false;
       snap = xr.depthUsage ? { frames: 0, points: [] } : null;
       presetIndex = -1;
       message = '';
@@ -235,6 +282,7 @@ export function startAr(root: HTMLElement): void {
       local = null;
       result = null;
       drag = null;
+      adjusting = false;
       step = { step: 'first' };
       renderer.keep([]);
       renderControls();
@@ -254,8 +302,43 @@ export function startAr(root: HTMLElement): void {
         const kind = step.surface.kind;
         const row = [button('Series', () => nextSeries(kind))];
         if (kind === 'wall') row.push(button('Preset', () => nextPreset()));
-        row.push(button('Mark again', restart), exit);
+        row.push(
+          button(
+            adjusting ? 'Done' : 'Corners',
+            () => {
+              adjusting = !adjusting;
+              message = adjusting ? 'Drag a corner (its white ring) to move it; get close for precision.' : '';
+              renderControls();
+            },
+            false,
+            adjusting,
+          ),
+          button(
+            lightAmount > 0 ? 'Light: on' : 'Light: off',
+            () => {
+              lightAmount = lightAmount > 0 ? 0 : LIGHT_AMOUNT;
+              renderControls();
+            },
+            false,
+            lightAmount > 0,
+          ),
+        );
         rows.push(h('div', { class: 'ar-row' }, ...row));
+        rows.push(
+          h(
+            'div',
+            { class: 'ar-row' },
+            button('Picture', () => {
+              if (!binding) {
+                message = 'This phone didn’t allow pictures in AR: take a screenshot (power + volume down).';
+                return;
+              }
+              wantPicture = true;
+            }),
+            button('Mark again', restart),
+            exit,
+          ),
+        );
       } else {
         rows.push(h('div', { class: 'ar-row' }, button('Back', back), button('Start over', restart), exit));
       }
@@ -308,7 +391,7 @@ export function startAr(root: HTMLElement): void {
     // ---- Taps: mark the next corner (aiming with the ring in the middle of the screen)
     xr.addEventListener('select', (event: XRInputSourceEvent) => {
       try {
-        markCorner(event.frame);
+        markCorner(event.frame, event.timeStamp);
       } catch (error) {
         message = `That tap didn't work: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -322,14 +405,22 @@ export function startAr(root: HTMLElement): void {
      * frame can't give the phone's position (Chrome refuses it outside drawing, and an earlier
      * version lost every tap that way), but it can give the hit test, which the anchor needs.
      */
-    function markCorner(eventFrame: XRFrame): void {
+    function markCorner(eventFrame: XRFrame, at: number): void {
       if (step.step === 'tiled') return;
       const before = step;
-      advance(eventFrame);
+      advance(eventFrame, at);
       if (step !== before) registered();
     }
 
-    function advance(eventFrame: XRFrame): void {
+    /** Where the aim was just before the tap (see steadyAim), if the samples say. */
+    function steadyPoint(at: number): Vec3 | null {
+      return steadyAim(
+        aimSamples.filter((s) => s.step === step),
+        at,
+      );
+    }
+
+    function advance(eventFrame: XRFrame, at: number): void {
       if (step.step === 'tiled') return;
       const ray = aimRay;
       if (!ray) {
@@ -343,7 +434,10 @@ export function startAr(root: HTMLElement): void {
           message = 'No surface under the ring yet: move the phone slowly over it.';
           return;
         }
-        const frame = surfaceFrame(pose.transform.matrix, viewer);
+        const hitFrame = surfaceFrame(pose.transform.matrix, viewer);
+        // The corner where the aim was just before the tap, on the surface the hit found.
+        const steady = steadyPoint(at);
+        const frame = steady ? { ...hitFrame, origin: onPlane(steady, hitFrame) } : hitFrame;
         const wanted = mode === 'wall' ? 'wall' : 'floor';
         if (frame.kind !== wanted) {
           message =
@@ -372,7 +466,7 @@ export function startAr(root: HTMLElement): void {
         renderControls();
         return;
       }
-      const point = aimPoint(ray);
+      const point = steadyPoint(at) ?? aimPoint(ray);
       if (!point) {
         message = 'Aim at the surface you are marking.';
         return;
@@ -403,6 +497,13 @@ export function startAr(root: HTMLElement): void {
       }
     }
 
+    /** A point brought onto a surface's plane. */
+    function onPlane(p: Vec3, frame: SurfaceFrame): Vec3 {
+      const n = frame.normal;
+      const d = (p[0] - frame.origin[0]) * n[0] + (p[1] - frame.origin[1]) * n[1] + (p[2] - frame.origin[2]) * n[2];
+      return [p[0] - n[0] * d, p[1] - n[1] * d, p[2] - n[2] * d];
+    }
+
     /** Where a ray meets the surface being marked (after its first corner). */
     function aimPoint(ray: Ray): Vec3 | null {
       switch (step.step) {
@@ -429,7 +530,16 @@ export function startAr(root: HTMLElement): void {
         const current = layout();
         const from = pose && surfaceMm(poseRay(pose.transform.matrix), step.surface.frame);
         if (!from || !current) return;
-        drag = { source: event.inputSource, from, start: { origin: current.origin, overrides: activePlan(doc).overrides, tile: current.tile }, doc };
+        if (adjusting) {
+          const corner = nearestCorner(step.surface, from, GRAB_MM);
+          if (corner === null) {
+            message = 'Start the drag on a corner (its white ring).';
+            return;
+          }
+          drag = { kind: 'corner', source: event.inputSource, corner, surface: step.surface };
+          return;
+        }
+        drag = { kind: 'pattern', source: event.inputSource, from, start: { origin: current.origin, overrides: activePlan(doc).overrides, tile: current.tile }, doc };
       } catch (error) {
         message = `That drag didn't work: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -444,6 +554,12 @@ export function startAr(root: HTMLElement): void {
       if (!drag || step.step !== 'tiled') return;
       // The touch may have ended between frames: its space then has no pose.
       const pose = frame.getPose(drag.source.targetRaySpace, room);
+      if (drag.kind === 'corner') {
+        const to = pose && surfaceMm(poseRay(pose.transform.matrix), drag.surface.frame);
+        const moved = to && moveCorner(drag.surface, drag.corner, to);
+        if (moved) place(moved);
+        return;
+      }
       const to = pose && surfaceMm(poseRay(pose.transform.matrix), step.surface.frame);
       if (!to) return;
       const raw = { x: drag.start.origin.x + to.x - drag.from.x, y: drag.start.origin.y + to.y - drag.from.y };
@@ -493,12 +609,14 @@ export function startAr(root: HTMLElement): void {
           const surface = surfaceFrame(m, viewer);
           aim = { kind: surface.kind, distance: distanceToPlane(viewer, surface) };
           rings.push({ model: ringOn(surface, surface.origin, AIM_M), colour: COLOURS[surface.kind] });
+          remember(time, surface.origin);
         }
       } else if (step.step !== 'tiled') {
         const plane = markingFrame();
         const point = aimPoint(aimRay);
         for (const corner of markedCorners()) rings.push({ model: ringOn(plane, corner, CORNER_M), colour: COLOURS.mark });
         if (point) {
+          remember(time, point);
           rings.push({ model: ringOn(plane, point, AIM_M), colour: COLOURS[plane.kind] });
           aim = { kind: plane.kind, distance: distanceToPlane(viewer, plane) };
           const preview = previewTo(point);
@@ -506,18 +624,105 @@ export function startAr(root: HTMLElement): void {
         }
       }
       const current = layout();
-      const patches = current && step.step === 'tiled' ? [{ result: current, model: local && anchorPose ? multiply(anchorPose, local) : surfaceToRoom(step.surface.frame, { x: 0, y: 0 }) }] : [];
+      const model = step.step === 'tiled' ? (local && anchorPose ? multiply(anchorPose, local) : surfaceToRoom(step.surface.frame, { x: 0, y: 0 })) : null;
+      const patches = current && model ? [{ result: current, model }] : [];
+      if (step.step === 'tiled' && adjusting && model) {
+        // The corners, where they are now (riding on the anchor), as white rings to drag.
+        const { right, up, normal } = step.surface.frame;
+        for (const c of cornersMm(step.surface)) {
+          const at = transformPoint(model, [c.x, c.y, 0]);
+          rings.push({ model: ringOn({ right, up, normal }, at, CORNER_M * 1.5), colour: COLOURS.mark });
+        }
+      }
+      if (step.step === 'tiled') updateLight(frame, step.surface.frame.normal);
       renderer.keep(patches);
+      const look = { groutMm: doc.settings.groutMm, groutColor: doc.settings.groutColor, light: lightGain };
       for (const view of pose.views) {
         const viewport = layer.getViewport(view);
         if (!viewport) continue;
         gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
         const depth = depthFor(frame, view, viewport);
         if (depth && view === pose.views[0]) snapToDepth(view, depth.info);
-        renderer.draw(view.projectionMatrix, view.transform.inverse.matrix, { patches, rects, rings }, { groutMm: doc.settings.groutMm, groutColor: doc.settings.groutColor }, depth?.picture ?? null);
+        renderer.draw(view.projectionMatrix, view.transform.inverse.matrix, { patches, rects, rings }, look, depth?.picture ?? null);
+        if (wantPicture && view === pose.views[0]) {
+          wantPicture = false;
+          takePicture(view, viewport, { patches, rects: [], rings: [] }, look, depth?.picture ?? null);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+        }
       }
       updateText(false, time);
     };
+
+    /** Keeps the last half-second of aim points (for steadyAim). */
+    function remember(time: number, p: Vec3): void {
+      aimSamples.push({ t: time, p, step });
+      while (aimSamples.length > 0 && aimSamples[0]!.t < time - 600) aimSamples.shift();
+    }
+
+    /**
+     * The room's light on the tiled surface: the phone's estimate for a surface facing its way,
+     * eased in over a few frames so it doesn't flicker; nothing when Light is off.
+     */
+    function updateLight(frame: XRFrame, normal: Vec3): void {
+      let target: [number, number, number] = [1, 1, 1];
+      const estimate = probe && frame.getLightEstimate ? frame.getLightEstimate(probe) : null;
+      if (estimate) {
+        const d = estimate.primaryLightDirection;
+        const i = estimate.primaryLightIntensity;
+        const light = surfaceLight({ sh: estimate.sphericalHarmonicsCoefficients, direction: [d.x, d.y, d.z], intensity: [i.x, i.y, i.z] }, normal);
+        target = tileGain(light, lightAmount);
+        const mean = (target[0] + target[1] + target[2]) / 3;
+        lightReport = lightAmount > 0 ? `×${mean.toFixed(2)} from the room's light` : 'off';
+      } else {
+        lightReport = probe ? 'no estimate yet' : 'not available on this phone';
+      }
+      lightGain = lightGain.map((g, c) => g + (target[c]! - g) * 0.1) as [number, number, number];
+    }
+
+    /**
+     * A picture of what the phone shows: the camera's picture with the tiles drawn over it,
+     * read back from an offscreen framebuffer while the frame is being drawn (the camera's
+     * picture is only there then).
+     */
+    function takePicture(view: XRView, viewport: XRViewport, scene: ArScene, look: { groutMm: number; groutColor: string; light: [number, number, number] }, depth: ArDepth | null): void {
+      const cameraTexture = binding && view.camera ? binding.getCameraImage(view.camera) : null;
+      if (!gl || !cameraTexture || step.step !== 'tiled') {
+        message = 'Couldn’t take the picture: try again.';
+        return;
+      }
+      const k = Math.min(1, PICTURE_SIDE / Math.max(viewport.width, viewport.height));
+      const w = Math.round(viewport.width * k);
+      const hgt = Math.round(viewport.height * k);
+      const target = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, target);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, hgt, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
+      gl.viewport(0, 0, w, hgt);
+      renderer.drawCamera(cameraTexture);
+      renderer.draw(view.projectionMatrix, view.transform.inverse.matrix, scene, look, depth ? { ...depth, viewport: [0, 0, w, hgt] } : null);
+      const pixels = new Uint8Array(w * hgt * 4);
+      gl.readPixels(0, 0, w, hgt, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fbo);
+      gl.deleteTexture(target);
+      // The framebuffer's rows run from the bottom; a picture's from the top.
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = hgt;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const image = ctx.createImageData(w, hgt);
+      for (let row = 0; row < hgt; row++) image.data.set(pixels.subarray((hgt - 1 - row) * w * 4, (hgt - row) * w * 4), row * w * 4);
+      ctx.putImageData(image, 0, 0);
+      const kind = step.surface.kind;
+      const result = layout();
+      if (!result) return;
+      pictures.push({ canvas, content: photoShareContent([{ name: kind === 'wall' ? 'Wall' : 'Floor', plan: activePlan(doc), result }], catalog, doc.settings.allowancePct) });
+      message = `Picture taken (${pictures.length}): share it after Exit AR.`;
+      registered();
+    }
 
     /** A view's depth picture from the depth sensor, where the phone has one. */
     function depthFor(frame: XRFrame, view: XRView, viewport: XRViewport): { info: XRCPUDepthInformation; picture: ArDepth } | null {
@@ -569,10 +774,7 @@ export function startAr(root: HTMLElement): void {
         message = `Checked with depth: the tiles sit on the ${word}.`;
         return;
       }
-      const moved = shifted(surface, offset);
-      step = { step: 'tiled', surface: moved };
-      const model = surfaceToRoom(moved.frame, { x: 0, y: 0 });
-      if (local && anchorPose) local = multiply(invertPose(anchorPose), model);
+      place(shifted(surface, offset));
       message = `Moved onto the ${word} by ${cm} cm (checked with depth).`;
     }
 
@@ -634,6 +836,7 @@ export function startAr(root: HTMLElement): void {
         `Tracking: ${tracking} · ${fps} fps`,
         `Aiming at: ${aim ? `${aim.kind}, ${aim.distance.toFixed(2)} m away (straight out)` : 'nothing yet'}`,
         `Depth: ${depthReport}`,
+        ...(step.step === 'tiled' ? [`Light: ${lightReport}`] : []),
         ...(message ? [message] : []),
       ];
     }
@@ -678,6 +881,7 @@ export function startAr(root: HTMLElement): void {
       start.disabled = false;
       report.hidden = false;
       report.textContent = ['Last session:', ...lines].join('\n');
+      showPictures();
     });
     renderControls();
     xr.requestAnimationFrame(onFrame);

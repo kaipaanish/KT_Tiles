@@ -28,8 +28,18 @@ const EXTRAS = ['dom-overlay', 'anchors', 'plane-detection', 'light-estimation']
 /**
  * Depth sensing must say how it wants the data, and its option names have changed between
  * versions of the spec: an unknown name fails the whole request, so each is tried in turn.
+ * Camera access (for pictures) is asked for first, then left out, so it can't cost the rest.
  */
 export const ATTEMPTS: readonly Attempt[] = [
+  {
+    label: 'all features with camera access, depth as luminance-alpha',
+    init: (overlay) => ({
+      requiredFeatures: ['hit-test'],
+      optionalFeatures: [...EXTRAS, 'depth-sensing', 'camera-access'],
+      domOverlay: { root: overlay },
+      depthSensing: { usagePreference: ['cpu-optimized', 'gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] },
+    }),
+  },
   {
     label: 'all features, depth as luminance-alpha',
     init: (overlay) => ({

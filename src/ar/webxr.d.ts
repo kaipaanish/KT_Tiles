@@ -37,6 +37,7 @@ interface XRSession extends EventTarget {
   updateRenderState(state: XRRenderStateInit): void;
   requestReferenceSpace(type: XRReferenceSpaceType): Promise<XRReferenceSpace>;
   requestHitTestSource?(options: { space: XRSpace; entityTypes?: string[] }): Promise<XRHitTestSource>;
+  requestLightProbe?(): Promise<XRLightProbe>;
   requestAnimationFrame(callback: (time: number, frame: XRFrame) => void): number;
   end(): Promise<void>;
   addEventListener(type: 'end', listener: () => void): void;
@@ -65,7 +66,14 @@ interface XRPose {
   readonly emulatedPosition: boolean;
 }
 
+/** The camera behind a view, for its picture (raw camera access). */
+interface XRCamera {
+  readonly width: number;
+  readonly height: number;
+}
+
 interface XRView {
+  readonly camera?: XRCamera | null;
   readonly eye: 'none' | 'left' | 'right';
   readonly projectionMatrix: Float32Array;
   readonly transform: XRRigidTransform;
@@ -105,9 +113,21 @@ interface XRCPUDepthInformation {
   getDepthInMeters(x: number, y: number): number;
 }
 
+/** The room's light, as the phone estimates it each frame. */
+interface XRLightProbe extends EventTarget {}
+
+interface XRLightEstimate {
+  /** 9 RGB spherical-harmonics coefficients of the ambient light, linear. */
+  readonly sphericalHarmonicsCoefficients: Float32Array;
+  /** Towards the main light. */
+  readonly primaryLightDirection: DOMPointReadOnly;
+  readonly primaryLightIntensity: DOMPointReadOnly;
+}
+
 interface XRFrame {
   readonly session: XRSession;
   getDepthInformation?(view: XRView): XRCPUDepthInformation | null;
+  getLightEstimate?(probe: XRLightProbe): XRLightEstimate | null;
   getViewerPose(referenceSpace: XRReferenceSpace): XRViewerPose | null;
   getPose(space: XRSpace, baseSpace: XRSpace): XRPose | null;
   getHitTestResults(source: XRHitTestSource): readonly XRHitTestResult[];
@@ -133,6 +153,18 @@ interface XRWebGLLayer {
   readonly framebufferHeight: number;
   getViewport(view: XRView): XRViewport | null;
 }
+
+/** For the camera's picture as a texture (raw camera access), during a frame. */
+interface XRWebGLBinding {
+  getCameraImage(camera: XRCamera): WebGLTexture | null;
+}
+
+declare var XRWebGLBinding:
+  | {
+      prototype: XRWebGLBinding;
+      new (session: XRSession, context: WebGL2RenderingContext): XRWebGLBinding;
+    }
+  | undefined;
 
 declare var XRWebGLLayer: {
   prototype: XRWebGLLayer;

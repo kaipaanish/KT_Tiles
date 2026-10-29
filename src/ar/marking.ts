@@ -108,6 +108,67 @@ export function wallUpTo(base: { frame: SurfaceFrame; widthMm: number }, top: Ve
   return heightMm < MIN_MARKED_MM ? null : { kind: 'wall', frame: base.frame, widthMm: base.widthMm, heightMm };
 }
 
+/** Aim samples taken this long before a tap (ms) are steady: the tap itself jolts the phone. */
+const STEADY_FROM_MS = 350;
+const STEADY_TO_MS = 80;
+
+/** Aim points within this of their average (metres) were taken with the phone held still. */
+const STILL_M = 0.02;
+
+/**
+ * Where the aim was just before a tap at time `at`, from the aim points between 350 and 80 ms
+ * earlier, before the finger came down and jolted the phone: their average if the phone was
+ * held still, else (it was still moving) the latest of them. Null with none (the caller then
+ * takes the latest aim). Samples are in time order.
+ */
+export function steadyAim(samples: readonly { t: number; p: Vec3 }[], at: number): Vec3 | null {
+  const before = samples.filter((s) => s.t >= at - STEADY_FROM_MS && s.t <= at - STEADY_TO_MS);
+  const latest = before[before.length - 1];
+  if (!latest) return null;
+  const mean = scale(
+    before.reduce<Vec3>((a, s) => [a[0] + s.p[0], a[1] + s.p[1], a[2] + s.p[2]], [0, 0, 0]),
+    1 / before.length,
+  );
+  const still = before.every((s) => length(sub(s.p, mean)) <= STILL_M);
+  return still ? mean : latest.p;
+}
+
+/** A marked surface's corners in its own millimetres: bottom-left, bottom-right, top-right, top-left. */
+export function cornersMm(surface: MarkedSurface): { x: number; y: number }[] {
+  const { widthMm: w, heightMm: h } = surface;
+  return [
+    { x: 0, y: 0 },
+    { x: w, y: 0 },
+    { x: w, y: h },
+    { x: 0, y: h },
+  ];
+}
+
+/** The corner nearest a point on the surface (mm), if one is within `withinMm`. */
+export function nearestCorner(surface: MarkedSurface, at: { x: number; y: number }, withinMm: number): number | null {
+  let best: number | null = null;
+  let bestDistance = withinMm;
+  cornersMm(surface).forEach((c, i) => {
+    const d = Math.hypot(c.x - at.x, c.y - at.y);
+    if (d <= bestDistance) {
+      best = i;
+      bestDistance = d;
+    }
+  });
+  return best;
+}
+
+/**
+ * The surface with one corner (0 bottom-left … 3 top-left) moved to a point on it (mm, in its
+ * own frame); the opposite corner stays. Null when that would leave it under 100 mm across.
+ */
+export function moveCorner(surface: MarkedSurface, corner: number, to: { x: number; y: number }): MarkedSurface | null {
+  const fixed = cornersMm(surface)[(corner + 2) % 4]!;
+  const xs = [fixed.x / 1000, to.x / 1000];
+  const ys = [fixed.y / 1000, to.y / 1000];
+  return rectangle(surface.kind, surface.frame, xs, ys);
+}
+
 /** Where a ray meets a surface, in the surface's millimetres (x right, y up from its origin). */
 export function surfaceMm(ray: Ray, frame: SurfaceFrame): { x: number; y: number } | null {
   const p = intersectPlane(ray, frame.origin, frame.normal);

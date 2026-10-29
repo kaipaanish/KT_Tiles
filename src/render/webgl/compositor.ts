@@ -1,8 +1,9 @@
 import type { LayoutResult } from '../../engine';
 import type { Mat3, Pt } from '../../photo/homography';
 import type { TextureCache } from '../textureCache';
-import { clipMatrix, FLOATS_PER_VERTEX, fragToPhotoUv, tileBatches } from './mesh';
+import { clipMatrix, fragToPhotoUv } from './mesh';
 import { TILE_FRAGMENT, TILE_VERTEX } from './shaders';
+import { deleteBatches, hexColour, linkProgram, meshAttributes, TileTextures, uploadBatches, type BatchGl, type MeshAttributes } from './tileGl';
 
 /** A single-channel image, 0–255, covering the whole photo. */
 export interface Plane {
@@ -39,29 +40,16 @@ export interface TileFrame {
   groutColor: string;
 }
 
-interface Batch {
-  tileId: string;
-  vao: WebGLVertexArrayObject;
-  buffers: WebGLBuffer[];
-  count: number;
-  type: number;
-}
-
 interface SurfaceGl {
   result: LayoutResult;
-  batches: Batch[];
+  batches: BatchGl[];
   maskSource: Plane;
   mask: WebGLTexture;
   shadingSource: Plane;
   shading: WebGLTexture;
 }
 
-interface Locations {
-  position: number;
-  local: number;
-  uv: number;
-  size: number;
-  joints: number;
+interface Locations extends MeshAttributes {
   matrix: WebGLUniformLocation | null;
   fragToUv: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
@@ -71,11 +59,6 @@ interface Locations {
   maskSampler: WebGLUniformLocation | null;
   shadeSampler: WebGLUniformLocation | null;
 }
-
-const hexColour = (hex: string): [number, number, number] => {
-  const n = Number.parseInt(hex.slice(1), 16);
-  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-};
 
 /**
  * Draws the tiles of the photo's surfaces with WebGL2, on a transparent canvas between the
@@ -87,13 +70,13 @@ export class TileCompositor {
   private gl: WebGL2RenderingContext | null = null;
   private program: WebGLProgram | null = null;
   private at: Locations | null = null;
-  private anisotropy: { ext: EXT_texture_filter_anisotropic; max: number } | null = null;
-  private readonly tiles = new Map<string, { source: HTMLCanvasElement; texture: WebGLTexture }>();
+  private readonly tiles: TileTextures;
   private readonly surfaces = new Map<string, SurfaceGl>();
   /** Called when a lost GPU context comes back, to draw again. */
   onRestored: (() => void) | null = null;
 
-  constructor(private readonly textures: TextureCache) {
+  constructor(textures: TextureCache) {
+    this.tiles = new TileTextures(textures);
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'photo-tiles';
     this.canvas.addEventListener('webglcontextlost', (event) => {
@@ -116,15 +99,11 @@ export class TileCompositor {
     const gl = this.canvas.getContext('webgl2', { antialias: true, alpha: true, premultipliedAlpha: true });
     if (!gl) return;
     this.gl = gl;
-    const program = this.link(gl);
+    const program = linkProgram(gl, TILE_VERTEX, TILE_FRAGMENT, 'Tile');
     if (!program) return;
     this.program = program;
     this.at = {
-      position: gl.getAttribLocation(program, 'a_position'),
-      local: gl.getAttribLocation(program, 'a_local'),
-      uv: gl.getAttribLocation(program, 'a_uv'),
-      size: gl.getAttribLocation(program, 'a_size'),
-      joints: gl.getAttribLocation(program, 'a_joints'),
+      ...meshAttributes(gl, program),
       matrix: gl.getUniformLocation(program, 'u_matrix'),
       fragToUv: gl.getUniformLocation(program, 'u_fragToUv'),
       light: gl.getUniformLocation(program, 'u_light'),
@@ -134,34 +113,6 @@ export class TileCompositor {
       maskSampler: gl.getUniformLocation(program, 'u_mask'),
       shadeSampler: gl.getUniformLocation(program, 'u_shade'),
     };
-    const ext = gl.getExtension('EXT_texture_filter_anisotropic');
-    this.anisotropy = ext ? { ext, max: Math.min(8, gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number) } : null;
-  }
-
-  private link(gl: WebGL2RenderingContext): WebGLProgram | null {
-    const compile = (type: number, source: string) => {
-      const shader = gl.createShader(type);
-      if (!shader) return null;
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.warn('Tile shader failed to compile', gl.getShaderInfoLog(shader));
-        return null;
-      }
-      return shader;
-    };
-    const vertex = compile(gl.VERTEX_SHADER, TILE_VERTEX);
-    const fragment = compile(gl.FRAGMENT_SHADER, TILE_FRAGMENT);
-    const program = gl.createProgram();
-    if (!vertex || !fragment || !program) return null;
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.warn('Tile shaders failed to link', gl.getProgramInfoLog(program));
-      return null;
-    }
-    return program;
   }
 
   /** Draws the surfaces for one frame; with none, clears the canvas. */
@@ -200,7 +151,7 @@ export class TileCompositor {
       gl.bindTexture(gl.TEXTURE_2D, surface.shading);
       for (const batch of surface.batches) {
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.tileTexture(gl, batch.tileId));
+        gl.bindTexture(gl.TEXTURE_2D, this.tiles.get(gl, batch.tileId));
         gl.bindVertexArray(batch.vao);
         gl.drawElements(gl.TRIANGLES, batch.count, batch.type, 0);
       }
@@ -220,14 +171,14 @@ export class TileCompositor {
   private surfaceFor(gl: WebGL2RenderingContext, scene: SurfaceScene): SurfaceGl {
     let surface = this.surfaces.get(scene.id);
     if (surface && surface.result !== scene.result) {
-      this.deleteBatches(gl, surface.batches);
-      surface.batches = this.buildBatches(gl, scene.result);
+      deleteBatches(gl, surface.batches);
+      surface.batches = uploadBatches(gl, scene.result, this.at!);
       surface.result = scene.result;
     }
     if (!surface) {
       surface = {
         result: scene.result,
-        batches: this.buildBatches(gl, scene.result),
+        batches: uploadBatches(gl, scene.result, this.at!),
         maskSource: scene.mask,
         mask: this.planeTexture(gl, scene.mask),
         shadingSource: scene.shading,
@@ -246,54 +197,6 @@ export class TileCompositor {
       surface.shadingSource = scene.shading;
     }
     return surface;
-  }
-
-  private buildBatches(gl: WebGL2RenderingContext, result: LayoutResult): Batch[] {
-    const at = this.at!;
-    const stride = FLOATS_PER_VERTEX * 4;
-    return tileBatches(result).map((batch) => {
-      const vao = gl.createVertexArray()!;
-      gl.bindVertexArray(vao);
-      const vbo = gl.createBuffer()!;
-      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-      gl.bufferData(gl.ARRAY_BUFFER, batch.vertices, gl.STATIC_DRAW);
-      const attribute = (location: number, size: number, offset: number) => {
-        if (location < 0) return;
-        gl.enableVertexAttribArray(location);
-        gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset * 4);
-      };
-      attribute(at.position, 2, 0);
-      attribute(at.local, 2, 2);
-      attribute(at.uv, 2, 4);
-      attribute(at.size, 2, 6);
-      attribute(at.joints, 4, 8);
-      const ibo = gl.createBuffer()!;
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, batch.indices, gl.STATIC_DRAW);
-      gl.bindVertexArray(null);
-      return { tileId: batch.tileId, vao, buffers: [vbo, ibo], count: batch.indices.length, type: batch.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT };
-    });
-  }
-
-  /** The tile's full-resolution texture from the designer's cache, uploaded again when a real image replaces its placeholder. */
-  private tileTexture(gl: WebGL2RenderingContext, tileId: string): WebGLTexture {
-    const source = this.textures.get(tileId, Number.POSITIVE_INFINITY);
-    const cached = this.tiles.get(tileId);
-    if (cached && cached.source === source) return cached.texture;
-    if (cached) gl.deleteTexture(cached.texture);
-    const texture = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-    gl.generateMipmap(gl.TEXTURE_2D);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    // Floors seen at a low angle stay sharp into the distance.
-    if (this.anisotropy) gl.texParameterf(gl.TEXTURE_2D, this.anisotropy.ext.TEXTURE_MAX_ANISOTROPY_EXT, this.anisotropy.max);
-    this.tiles.set(tileId, { source, texture });
-    return texture;
   }
 
   /** A mask or shading map, filtered linearly (which also softens the mask's edge). */
@@ -315,29 +218,17 @@ export class TileCompositor {
     const ids = new Set(scenes.map((s) => s.id));
     for (const [id, surface] of this.surfaces) {
       if (ids.has(id)) continue;
-      this.deleteBatches(gl, surface.batches);
+      deleteBatches(gl, surface.batches);
       gl.deleteTexture(surface.mask);
       gl.deleteTexture(surface.shading);
       this.surfaces.delete(id);
     }
-    const tileIds = new Set(scenes.flatMap((s) => s.result.pieces.map((p) => p.tileId)));
-    for (const [id, tile] of this.tiles) {
-      if (tileIds.has(id)) continue;
-      gl.deleteTexture(tile.texture);
-      this.tiles.delete(id);
-    }
-  }
-
-  private deleteBatches(gl: WebGL2RenderingContext, batches: Batch[]): void {
-    for (const batch of batches) {
-      gl.deleteVertexArray(batch.vao);
-      for (const buffer of batch.buffers) gl.deleteBuffer(buffer);
-    }
+    this.tiles.keep(gl, new Set(scenes.flatMap((s) => s.result.pieces.map((p) => p.tileId))));
   }
 
   /** After a lost context every GPU object is gone; they are made again on the next draw. */
   private forget(): void {
-    this.tiles.clear();
+    this.tiles.forget();
     this.surfaces.clear();
     this.program = null;
     this.at = null;

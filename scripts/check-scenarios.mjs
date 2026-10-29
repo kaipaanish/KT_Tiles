@@ -170,6 +170,101 @@ async function pointer(page, device) {
 const press = (page, device, selector) => (device === 'phone' ? page.locator(selector).tap() : page.locator(selector).click());
 const alignX = (s) => s.doc.wall.alignment.x;
 
+/**
+ * A stand-in for WebXR, run in the page before the app (headless Chrome has no AR): the camera
+ * 1.5 m up looking ahead, and a wall 2 m away that every hit test finds. Its layer draws into the
+ * app's own canvas, shown in a corner, and after each frame it reads back one pixel to the right
+ * of the middle, where a placed square's tiles should be. `__fakeXr.session.select()` taps.
+ */
+function fakeWebXr() {
+  const W = 600;
+  const H = 800;
+  const near = 0.05;
+  const far = 100;
+  const f = 1 / Math.tan(Math.PI / 6);
+  const projection = new Float32Array([f / (W / H), 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
+  const camera = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.5, 0, 1]);
+  const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, -1.5, 0, 1]);
+  // The hit's y axis is the wall's normal, towards the camera.
+  const wall = new Float32Array([1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1.5, -2, 1]);
+  const state = { gl: null, session: null, init: null, anchors: new Set(), pixel: null };
+  window.__fakeXr = state;
+  const pose = (matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, inverse: { matrix: view } } });
+  const frame = (session) => ({
+    session,
+    getViewerPose: () => ({ ...pose(camera), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: view } } }] }),
+    getHitTestResults: () => [
+      {
+        getPose: () => pose(wall),
+        createAnchor: () => {
+          const anchor = { anchorSpace: {}, delete: () => state.anchors.delete(anchor) };
+          state.anchors.add(anchor);
+          return Promise.resolve(anchor);
+        },
+      },
+    ],
+    getPose: () => pose(wall),
+    trackedAnchors: state.anchors,
+    detectedPlanes: new Set([{ orientation: 'vertical' }, { orientation: 'horizontal' }]),
+  });
+  class FakeSession extends EventTarget {
+    enabledFeatures = ['hit-test', 'dom-overlay', 'anchors', 'plane-detection'];
+    domOverlayState = { type: 'screen' };
+    ended = false;
+    updateRenderState() {}
+    requestReferenceSpace() {
+      return Promise.resolve({});
+    }
+    requestHitTestSource() {
+      return Promise.resolve({ cancel() {} });
+    }
+    requestAnimationFrame(callback) {
+      setTimeout(() => {
+        if (this.ended) return;
+        callback(performance.now(), frame(this));
+        const gl = state.gl;
+        const out = new Uint8Array(4);
+        gl.readPixels(W / 2 + 90, H / 2, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+        state.pixel = Array.from(out);
+      }, 16);
+      return 1;
+    }
+    end() {
+      this.ended = true;
+      this.dispatchEvent(new Event('end'));
+      return Promise.resolve();
+    }
+    select() {
+      const event = new Event('select');
+      event.frame = frame(this);
+      this.dispatchEvent(event);
+    }
+  }
+  window.XRWebGLLayer = class {
+    constructor(session, gl) {
+      state.gl = gl;
+      gl.canvas.width = W;
+      gl.canvas.height = H;
+      gl.canvas.style.cssText = 'position:fixed;right:8px;bottom:96px;width:240px;height:320px;pointer-events:none;outline:1px solid #999';
+      document.body.append(gl.canvas);
+      this.framebuffer = null;
+    }
+    getViewport() {
+      return { x: 0, y: 0, width: W, height: H };
+    }
+  };
+  WebGL2RenderingContext.prototype.makeXRCompatible = () => Promise.resolve();
+  const xr = {
+    isSessionSupported: (mode) => Promise.resolve(mode === 'immersive-ar'),
+    requestSession: (_mode, init) => {
+      state.init = init;
+      state.session = new FakeSession();
+      return Promise.resolve(state.session);
+    },
+  };
+  Object.defineProperty(navigator, 'xr', { value: xr, configurable: true });
+}
+
 export const scenarios = [
   // ---- Static rendering (step 2)
   { name: 'opening-wall', path: './' },
@@ -1319,6 +1414,50 @@ export const scenarios = [
       await expectState(page, (s) => s.doc.active === 'floor', 'floor shown', (s) => s.doc.active);
       assert(await page.locator('.mode-switch button:has-text("Row")').isDisabled(), 'Row mode is off on floors');
       await shot('floor');
+    },
+  },
+
+  // ---- AR test screen (step 3a). Real AR needs a phone; these cover the rest.
+  {
+    // Where AR can't run (here, headless Chrome on a laptop) the screen says why, and AR in the top bar gets there.
+    name: 'ar-unsupported',
+    path: './',
+    async run(page, { device, shot }) {
+      await press(page, device, '.view-toggle button[aria-label="AR"]');
+      await page.waitForURL(/view=ar/, { timeout: 5000 });
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 5000 });
+      const message = await page.locator('.ar-support').textContent();
+      assert(/Android/.test(message ?? ''), `the screen says what AR needs: "${message}"`);
+      assert(await page.locator('.ar-actions button:text-is("Start AR")').isDisabled(), 'Start AR is off');
+      await shot('');
+    },
+  },
+  {
+    // With a stand-in for WebXR: the session starts with hit test and the overlay, aims at the
+    // wall, and a tap places an anchored square of tiles that the GPU draws where expected.
+    name: 'ar-fake',
+    path: './?view=ar',
+    init: fakeWebXr,
+    async run(page, { device, shot }) {
+      await page.locator('.ar-support:text-is("This phone can run AR.")').waitFor({ timeout: 5000 });
+      await press(page, device, '.ar-actions button:text-is("Start AR")');
+      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Aiming at: wall, 2.00 m away'), null, { timeout: 5000 });
+      const init = await page.evaluate(() => window.__fakeXr.init);
+      assert(init.requiredFeatures.includes('hit-test') && init.optionalFeatures.includes('anchors') && init.domOverlay, `asks for hit test, anchors and the overlay: ${JSON.stringify(init.optionalFeatures)}`);
+      const before = await page.evaluate(() => window.__fakeXr.pixel);
+      assert(before?.[3] === 0, `nothing drawn beside the ring before a tap (${before})`);
+      await page.evaluate(() => window.__fakeXr.session.select());
+      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Placed: 1 (1 anchored)'), null, { timeout: 5000 });
+      await pause(100);
+      const after = await page.evaluate(() => window.__fakeXr.pixel);
+      assert(after?.[3] === 255 && after[0] + after[1] + after[2] > 150, `the square's tiles are drawn beside the ring (${after})`);
+      await shot('placed');
+      await press(page, device, '.ar-controls button:text-is("Undo")');
+      await page.waitForFunction(() => document.querySelector('.ar-status')?.textContent?.includes('Placed: 0'), null, { timeout: 3000 });
+      await press(page, device, '.ar-controls button:text-is("Exit AR")');
+      await page.locator('.ar-report:has-text("Last session:")').waitFor({ timeout: 3000 });
+      assert((await page.locator('.ar-report').textContent()).includes('Features granted: hit-test, dom-overlay, anchors, plane-detection'), 'the report lists the features');
+      await shot('report');
     },
   },
 ];

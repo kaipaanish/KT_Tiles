@@ -12,6 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
+- Step 3a, a first AR test, is built; see the [checklist](#step-3-checklist). It needs trying on an Android phone.
 - Step 2 is complete in the browser; see the [checklist](#step-2-checklist). Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, a brush corrects where tiles go, a before/after line compares, and Share sends the photo with its tiles. Still to try on a real phone: the camera, WhatsApp, and timings.
 
 ## Using it
@@ -81,6 +82,22 @@ The tiles then appear on the surface in perspective, behind fixtures, keeping th
 
 Photos stay on the device. They are never uploaded and never saved, so closing the page loses them. While a photo has surfaces that haven't been shared, the browser asks before you leave the page.
 
+### AR test (step 3a)
+
+**AR** in the top bar opens the AR test screen (`?view=ar`). It needs Chrome on an Android phone with Google Play Services for AR; elsewhere it says so.
+
+1. **Start AR** opens the camera.
+2. Move the phone slowly over a wall or the floor until a ring appears on it: blue on a wall, orange on the floor.
+3. Tap to place a 1 m square of your design there (the wall's or the floor's, as saved in the designer). **Undo**, **Clear** and **Exit AR** are at the bottom.
+
+Text at the top reports what the phone granted and how tracking is going:
+- the features (hit test, overlay, anchors, plane detection, depth, lighting);
+- tracking;
+- what the ring is on and how far away;
+- the surfaces found, the squares placed (anchored or not), and the frame rate.
+
+After **Exit AR**, the same report stays on the screen.
+
 ## Run and test
 
 Needs Node 20.19+ or 22.12+ (required by Vite 8).
@@ -127,6 +144,7 @@ These open the app on a particular design, for demos and checks:
 | `backend` | `wasm` | Run the wall finder on WASM even where WebGPU is available, for comparison |
 | `edges` | `bilinear` | Turn off the photo-guided edges, for comparison |
 | `segmenter` | `fake` | Skip the model: a plain room layout (ceiling, wall, floor), for quick checks. `fake-wall`: a wall filling the photo |
+| `view` | `ar` | The AR test screen (step 3a) |
 | `debug` | `1` | Exposes `window.ktDebug` (state and coordinates) for the browser check |
 | `fresh` | `1` | Start from the default design instead of the autosaved one |
 
@@ -509,6 +527,32 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - After Done, if more than 4% inside the corners is left untiled, a message suggests Add for any of it that is wall.
     - The superpixels are made once per photo, the first time a surface is tiled. Done takes about 250–450 ms in headless desktop Chrome, including the superpixels; this needs checking on a phone.
 
+**Step 3a: AR test**
+
+87. **A test on a real phone comes before full AR.** The AR test screen answers four questions before the full version is built:
+    - Does the phone run WebXR AR at all?
+    - Does it find walls as well as floors? Plain painted walls are hard for ARCore.
+    - Do placed tiles stay put?
+    - Which extras does it grant: depth (for things in front), lighting, anchors, plane detection?
+88. **The AR screen stands apart from the app for now.** It is a separate screen (`?view=ar`, loaded only when asked for), built from the saved design, so the test barely touches the designer and photo mode. Step 3b brings AR into the app.
+89. **AR draws the same tile mesh as photo mode, with the same grout.**
+    - The tiles stay in surface millimetres; a matrix places them in the room in metres.
+    - The mesh upload, tile textures and grout shader code are shared with the photo compositor.
+    - A wall's "up" is the room's up. On a floor the design's "up" runs away from you, so it reads the right way round as you look down at it.
+    - The surface normal is turned to face you, so a wall can't come out mirrored.
+90. **Each placed square is anchored where the phone allows**, so tracking corrections move it with the room. The placement is kept relative to the anchor.
+91. **The session asks for the most features first, then fewer.**
+    - Depth sensing must name its data format, and the names have changed between versions of the spec. An unknown name fails the whole request.
+    - So it tries, in order: everything with one name, everything with the other, everything but depth, then hit test and overlay only.
+    - Chrome may want a fresh tap for a retry, so the screen then asks for one.
+    - The report says which attempt worked and why the others failed.
+92. **There are no WebXR type definitions in the dependencies.** TypeScript's DOM library leaves WebXR out, so `src/ar/webxr.d.ts` declares the few parts used.
+93. **AR is tested in the browser with a stand-in for WebXR.**
+    - Headless Chrome has no AR. Browser check `ar-fake` injects a fake session: the camera 1.5 m up, and a wall 2 m ahead that every hit test finds.
+    - It runs the real screen, session code, maths and renderer. It checks the features asked for, the aim ("wall, 2.00 m away"), a tap placing an anchored square, and the GPU's pixel beside the ring, then Undo and the report after Exit.
+    - `ar-unsupported` checks that a laptop gets the explanation.
+    - Real tracking, frame rate and what the phone grants can only be seen on a phone.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -545,3 +589,16 @@ What "done" means for step 2, and how each item is verified. Browser checks run 
 | All tests pass, including step 1's | Done | `npm test`: 201 tests. Browser check: 64 pages, no console errors |
 
 The wall finder on the sample, in headless desktop Chrome: WebGPU fp16 about 3 s to load (the download already cached) and 3 s to run the first time; WASM about 2.3 s to run.
+
+## Step 3 checklist
+
+Step 3a is a test on a real phone; its answers shape 3b (the real thing) and 3c (realism).
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| AR starts on an Android phone in Chrome, on the deployed HTTPS site | **Phone to try** | The report on screen says which attempt worked. In the browser, `ar-fake` starts a session with a stand-in for WebXR |
+| A ring appears on walls and on the floor | **Phone to try** | "Aiming at" in the report. `ar-fake`: "wall, 2.00 m away" |
+| A tap places a 1 m square of the design, drawn in perspective with grout, and it stays put while walking around | Drawing verified with the stand-in; **phone to try** | `ar-fake` reads the GPU's pixel beside the ring before and after the tap; unit tests for the surface frames, the mm-to-metre placement and anchors |
+| The phone's features (depth, lighting, anchors, plane detection) and frame rate are known | **Phone to try** | The report lists them, during and after a session |
+| Where AR can't run, the screen says what it needs | Done | `ar-unsupported` (headless Chrome on a laptop) |
+| All tests pass, including steps 1 and 2 | Done | `npm test`: 207 tests. Browser check: 68 pages, no console errors |

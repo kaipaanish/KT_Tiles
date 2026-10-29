@@ -13,6 +13,8 @@ export interface TopBarActions {
   redo(): void;
   /** Hidden until provided. */
   share?: () => void;
+  /** Opens the AR test screen (step 3a). */
+  openAr(): void;
 }
 
 const DESIGNER_ICON = '<g fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></g>';
@@ -38,6 +40,7 @@ export class TopBar {
   ) {
     this.designer = h('button', { type: 'button', class: 'segment', 'aria-label': 'Designer', title: 'Designer: flat wall or floor', onclick: () => actions.setView('designer') }, icon(DESIGNER_ICON), h('span', { class: 'view-label' }, 'Designer'));
     this.photo = h('button', { type: 'button', class: 'segment', 'aria-label': 'Photo', title: 'Photo: tile a real room', onclick: () => actions.setView('photo') }, icon(PHOTO_ICON), h('span', { class: 'view-label' }, 'Photo'));
+    const ar = h('button', { type: 'button', class: 'segment', 'aria-label': 'AR', title: 'AR: tiles on a wall through the camera (Chrome on Android)', onclick: () => actions.openAr() }, 'AR');
     this.wall = h('button', { type: 'button', class: 'segment', onclick: () => actions.setSurface('wall') }, 'Wall');
     this.floor = h('button', { type: 'button', class: 'segment', onclick: () => actions.setSurface('floor') }, 'Floor');
     this.size = h('button', { type: 'button', class: 'size-chip', 'aria-haspopup': 'dialog', onclick: () => this.openSize() });
@@ -48,7 +51,7 @@ export class TopBar {
     this.el = h(
       'header',
       { class: 'topbar' },
-      h('div', { class: 'segmented view-toggle', role: 'group', 'aria-label': 'Mode' }, this.designer, this.photo),
+      h('div', { class: 'segmented view-toggle', role: 'group', 'aria-label': 'Mode' }, this.designer, this.photo, ar),
       (this.surfaceToggle = h('div', { class: 'segmented surface-toggle', role: 'group', 'aria-label': 'Surface' }, this.wall, this.floor)),
       this.size,
       // On phones the bar wraps here: the surface and its size get a row of their own.

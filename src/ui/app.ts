@@ -70,7 +70,7 @@ function initialUi(params: URLSearchParams, saved: Toggles | null): UiState {
 }
 
 /** The opening design: a design link, else the autosaved design, else the default. */
-function openingDesign(params: URLSearchParams): DesignDoc {
+export function openingDesign(params: URLSearchParams): DesignDoc {
   const linked = DESIGN_PARAMS.some((key) => params.has(key));
   const saved = linked ? null : parseSavedDesign(readStorage(DESIGN_KEY), catalog);
   return saved ?? applyQuery(createDefaultDocument(catalog), params, catalog);
@@ -142,6 +142,11 @@ export function startApp(root: HTMLElement): void {
     undo: () => store.undo(),
     redo: () => store.redo(),
     share: () => void shareNow(),
+    // The design is autosaved, so the AR screen opens with it.
+    openAr: () => {
+      flush();
+      location.assign('?view=ar');
+    },
   });
   root.append(topbar.el, stage);
 

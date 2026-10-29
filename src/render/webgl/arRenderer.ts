@@ -31,6 +31,20 @@ export interface ArScene {
   rings: readonly ArRing[];
 }
 
+/** One view's depth picture from the phone's depth sensor, for hiding tiles behind real things. */
+export interface ArDepth {
+  width: number;
+  height: number;
+  /** Raw readings, row by row from the picture's top-left: two bytes each, or 32-bit floats. */
+  data: ArrayBuffer;
+  float: boolean;
+  rawToMeters: number;
+  /** Normalised view coordinates → normalised depth-picture coordinates, column-major. */
+  uvMatrix: Float32Array;
+  /** The view's viewport in the framebuffer: x, y, width, height. */
+  viewport: [number, number, number, number];
+}
+
 interface TileLocations extends MeshAttributes {
   projection: WebGLUniformLocation | null;
   view: WebGLUniformLocation | null;
@@ -38,6 +52,11 @@ interface TileLocations extends MeshAttributes {
   tile: WebGLUniformLocation | null;
   grout: WebGLUniformLocation | null;
   groutMm: WebGLUniformLocation | null;
+  depth: WebGLUniformLocation | null;
+  depthUv: WebGLUniformLocation | null;
+  rawToMeters: WebGLUniformLocation | null;
+  viewportAt: WebGLUniformLocation | null;
+  depthMode: WebGLUniformLocation | null;
 }
 
 interface ShapeProgram {
@@ -63,6 +82,7 @@ export class ArRenderer {
   private readonly rect: ShapeProgram | null;
   private readonly tiles: TileTextures;
   private readonly meshes = new Map<LayoutResult, BatchGl[]>();
+  private depthTexture: WebGLTexture | null = null;
 
   constructor(
     private readonly gl: WebGL2RenderingContext,
@@ -80,6 +100,11 @@ export class ArRenderer {
         tile: gl.getUniformLocation(p, 'u_tile'),
         grout: gl.getUniformLocation(p, 'u_grout'),
         groutMm: gl.getUniformLocation(p, 'u_groutMm'),
+        depth: gl.getUniformLocation(p, 'u_depth'),
+        depthUv: gl.getUniformLocation(p, 'u_depthUv'),
+        rawToMeters: gl.getUniformLocation(p, 'u_rawToMeters'),
+        viewportAt: gl.getUniformLocation(p, 'u_viewport'),
+        depthMode: gl.getUniformLocation(p, 'u_depthMode'),
       };
     }
     // Two triangles: the ring's square spans −1…1, the rectangle's 0…1.
@@ -115,8 +140,11 @@ export class ArRenderer {
     };
   }
 
-  /** Draws one view (projection and view matrices from WebXR) into the current viewport. */
-  draw(projection: Float32Array, view: Float32Array, scene: ArScene, look: { groutMm: number; groutColor: string }): void {
+  /**
+   * Draws one view (projection and view matrices from WebXR) into the current viewport. With the
+   * view's depth picture, tiles behind real things aren't drawn.
+   */
+  draw(projection: Float32Array, view: Float32Array, scene: ArScene, look: { groutMm: number; groutColor: string }, depth: ArDepth | null = null): void {
     const gl = this.gl;
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
@@ -130,6 +158,15 @@ export class ArRenderer {
       gl.uniform3fv(at.grout, hexColour(look.groutColor));
       gl.uniform1f(at.groutMm, look.groutMm);
       gl.uniform1i(at.tile, 0);
+      gl.uniform1i(at.depth, 1);
+      gl.uniform1i(at.depthMode, depth ? (depth.float ? 2 : 1) : 0);
+      if (depth) {
+        gl.activeTexture(gl.TEXTURE1);
+        this.uploadDepth(depth);
+        gl.uniformMatrix4fv(at.depthUv, false, depth.uvMatrix);
+        gl.uniform1f(at.rawToMeters, depth.rawToMeters);
+        gl.uniform4fv(at.viewportAt, depth.viewport);
+      }
       gl.activeTexture(gl.TEXTURE0);
       for (const patch of scene.patches) {
         gl.uniformMatrix4fv(at.model, false, patch.model);
@@ -156,6 +193,23 @@ export class ArRenderer {
     shapes(this.rect, scene.rects);
     shapes(this.ring, scene.rings);
     gl.bindVertexArray(null);
+  }
+
+  /**
+   * The depth picture as a texture, read exactly (no blending between readings: two bytes of one
+   * reading blended with another's would be nonsense).
+   */
+  private uploadDepth(depth: ArDepth): void {
+    const gl = this.gl;
+    this.depthTexture ??= gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTexture);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (depth.float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, depth.width, depth.height, 0, gl.RED, gl.FLOAT, new Float32Array(depth.data));
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, depth.width, depth.height, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(depth.data));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   /** Frees the meshes and textures of layouts no longer drawn. */

@@ -175,8 +175,11 @@ const alignX = (s) => s.doc.wall.alignment.x;
  * wall 2 m ahead (z = −2, facing the camera) and the floor (y = 0), and a camera 1.5 m up that
  * `__fakeXr.aimAt([x, y, z])` turns towards a point. Hit tests find the nearest of the wall and the
  * floor along the camera's ray. `select()` taps; `touchAt(point)`, `selectstart()` and `selectend()`
- * drag a finger. Its layer draws into the app's own canvas, shown in a corner, and after each
- * frame it reads back the pixel in the middle and one near the top (`__fakeXr.pixels`).
+ * drag a finger. Its depth sensor sees the real room: the wall, the floor and `__fakeXr.box` (a
+ * thing in front), while `__fakeXr.wallError` puts the phone's own estimate of the wall that far
+ * in front of the real one. Its layer draws into the app's own canvas, shown in a corner, and after
+ * each frame it reads back three pixels: the middle, one near the top and one to the left of the
+ * middle (`__fakeXr.pixels`).
  */
 function fakeWebXr() {
   const W = 600;
@@ -186,7 +189,7 @@ function fakeWebXr() {
   const f = 1 / Math.tan(Math.PI / 6);
   const projection = new Float32Array([f / (W / H), 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
   const eye = [0, 1.5, 0];
-  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null };
+  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null, wallError: 0, box: null };
   window.__fakeXr = state;
   const norm = (v) => {
     const l = Math.hypot(...v);
@@ -214,16 +217,52 @@ function fakeWebXr() {
   state.touchAt = (to) => {
     state.touch = to ? lookAt(eye, to).m : null;
   };
-  const planes = [
+  const room = () => [
     { point: [0, 0, -2], normal: [0, 0, 1] },
     { point: [0, 0, 0], normal: [0, 1, 0] },
   ];
-  /** The nearest surface along a pose's ray, as WebXR gives it: y along the normal. */
+  /** The phone's own idea of the room: the wall `wallError` metres in front of where it really is. */
+  const estimated = () => [
+    { point: [0, 0, -2 + state.wallError], normal: [0, 0, 1] },
+    { point: [0, 0, 0], normal: [0, 1, 0] },
+  ];
+  /** How far along a ray (o + t·d) it meets a plane, or Infinity. */
+  const meet = (o, d, plane) => {
+    const facing = d[0] * plane.normal[0] + d[1] * plane.normal[1] + d[2] * plane.normal[2];
+    if (Math.abs(facing) < 1e-9) return Infinity;
+    const t = ((plane.point[0] - o[0]) * plane.normal[0] + (plane.point[1] - o[1]) * plane.normal[1] + (plane.point[2] - o[2]) * plane.normal[2]) / facing;
+    return t > 0 ? t : Infinity;
+  };
+  /** The depth sensor's reading at normalised view point (x, y): along the camera's −z to the real room, box included. */
+  const depthAt = (x, y) => {
+    const dv = [(2 * x - 1 + projection[8]) / projection[0], (1 - 2 * y + projection[9]) / projection[5], -1];
+    const c = state.camera;
+    const d = [0, 1, 2].map((k) => c[k] * dv[0] + c[4 + k] * dv[1] + c[8 + k] * dv[2]);
+    let best = Math.min(...room().map((plane) => meet(eye, d, plane)));
+    if (state.box) {
+      let t0 = 0;
+      let t1 = Infinity;
+      for (let k = 0; k < 3; k++) {
+        if (Math.abs(d[k]) < 1e-9) {
+          if (eye[k] < state.box.min[k] || eye[k] > state.box.max[k]) t0 = Infinity;
+          continue;
+        }
+        let a = (state.box.min[k] - eye[k]) / d[k];
+        let b = (state.box.max[k] - eye[k]) / d[k];
+        if (a > b) [a, b] = [b, a];
+        t0 = Math.max(t0, a);
+        t1 = Math.min(t1, b);
+      }
+      if (t0 <= t1 && t0 > 0) best = Math.min(best, t0);
+    }
+    return Number.isFinite(best) ? best : 0;
+  };
+  /** The nearest surface along a pose's ray, as WebXR's hit test gives it (from the phone's estimate): y along the normal. */
   const hitFrom = (m) => {
     const o = [m[12], m[13], m[14]];
     const d = [-m[8], -m[9], -m[10]];
     let best = null;
-    for (const plane of planes) {
+    for (const plane of estimated()) {
       const facing = d[0] * plane.normal[0] + d[1] * plane.normal[1] + d[2] * plane.normal[2];
       if (Math.abs(facing) < 1e-6) continue;
       const t = ((plane.point[0] - o[0]) * plane.normal[0] + (plane.point[1] - o[1]) * plane.normal[1] + (plane.point[2] - o[2]) * plane.normal[2]) / facing;
@@ -244,7 +283,22 @@ function fakeWebXr() {
     session,
     getViewerPose: () => {
       if (!animation) throw new DOMException('getViewerPose can only be called on frames passed to a callback of requestAnimationFrame()', 'InvalidStateError');
-      return { ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: state.view } } }] };
+      return { ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { matrix: state.camera, inverse: { matrix: state.view } } }] };
+    },
+    // A 60 × 80 depth picture (3:4, like the view), two bytes per reading in millimetres.
+    getDepthInformation: () => {
+      if (!animation) throw new DOMException('getDepthInformation can only be called on frames passed to a callback of requestAnimationFrame()', 'InvalidStateError');
+      const w = 60;
+      const h = 80;
+      const bytes = new Uint8Array(w * h * 2);
+      for (let row = 0; row < h; row++) {
+        for (let col = 0; col < w; col++) {
+          const raw = Math.round(depthAt((col + 0.5) / w, (row + 0.5) / h) / 0.001);
+          bytes[(row * w + col) * 2] = raw & 255;
+          bytes[(row * w + col) * 2 + 1] = raw >> 8;
+        }
+      }
+      return { width: w, height: h, data: bytes.buffer, rawValueToMeters: 0.001, normDepthBufferFromNormView: { matrix: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) }, getDepthInMeters: depthAt };
     },
     getHitTestResults: () => {
       const m = hitFrom(state.camera);
@@ -269,8 +323,10 @@ function fakeWebXr() {
     detectedPlanes: new Set([{ orientation: 'vertical' }, { orientation: 'horizontal' }]),
   });
   class FakeSession extends EventTarget {
-    enabledFeatures = ['hit-test', 'dom-overlay', 'anchors', 'plane-detection'];
+    enabledFeatures = ['hit-test', 'dom-overlay', 'anchors', 'plane-detection', 'depth-sensing'];
     domOverlayState = { type: 'screen' };
+    depthUsage = 'cpu-optimized';
+    depthDataFormat = 'luminance-alpha';
     ended = false;
     updateRenderState() {}
     requestReferenceSpace() {
@@ -289,7 +345,7 @@ function fakeWebXr() {
           gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
           return Array.from(out);
         };
-        state.pixels = { centre: read(W / 2, H / 2), top: read(W / 2, H - 30) };
+        state.pixels = { centre: read(W / 2, H / 2), top: read(W / 2, H - 30), side: read(W / 2 - 150, H / 2) };
       }, 16);
       return 1;
     }
@@ -1509,13 +1565,21 @@ export const scenarios = [
   },
   {
     // With a stand-in for WebXR (a wall 2 m ahead and the floor): mark a wall by two corners, see
-    // it tiled where marked and nowhere else, slide the pattern with a finger, switch series; then
-    // mark a plain wall by its base; the designer opens with the measured wall.
+    // it tiled where marked and nowhere else, moved onto the real wall by the depth sensor, and
+    // hidden behind a thing in front; slide the pattern with a finger, switch series; then mark a
+    // plain wall by its base; the designer opens with the measured wall.
     name: 'ar-fake',
     path: './?view=ar',
     init: fakeWebXr,
     async run(page, { device, shot }) {
-      const statusHas = (text, timeout = 3000) => page.waitForFunction((t) => document.querySelector('.ar-overlay')?.textContent?.includes(t), text, { timeout });
+      const statusHas = async (text, timeout = 3000) => {
+        try {
+          await page.waitForFunction((t) => document.querySelector('.ar-overlay')?.textContent?.includes(t), text, { timeout });
+        } catch {
+          const shown = await page.evaluate(() => document.querySelector('.ar-overlay')?.innerText ?? '');
+          throw new Error(`waited for "${text}"; the screen says: ${shown.replace(/s+/g, ' ')}`);
+        }
+      };
       const frames = () => pause(120);
       const savedDesign = () => page.evaluate(() => JSON.parse(localStorage.getItem('kt-tile-designer:design:v1') ?? 'null'));
       const aimAt = async (point) => {
@@ -1539,15 +1603,21 @@ export const scenarios = [
       await tap();
       await statusHas("That's the floor, not a wall");
 
-      // A wall 1.2 m wide and 1 m high, from (−0.6, 1.0) to (0.6, 2.0) on the wall.
-      await aimAt([-0.6, 1.0, -2]);
+      // A wall 1.2 m wide and 1 m high, from (−0.6, 1.0) to (0.6, 2.0) on the wall. The phone puts
+      // the wall 5 cm in front of where it really is, as a real phone can.
+      await page.evaluate(() => {
+        window.__fakeXr.wallError = 0.05;
+      });
+      await aimAt([-0.6, 1.0, -1.95]);
       await tap();
       await statusHas('Now aim at the opposite corner');
-      await aimAt([0.6, 2.0, -2]);
+      await aimAt([0.6, 2.0, -1.95]);
       await shot('marking');
       await tap();
       await statusHas('Wall 1.20 × 1.00 m · Demo Ivory Bloom');
       await statusHas('Drag on the tiles to slide the pattern.');
+      await statusHas('Moved onto the wall by 5 cm (checked with depth).');
+      await statusHas('Depth: on (60 × 80)');
       const wall = (await savedDesign()).wall;
       assert(wall.surface.widthMm === 1200 && wall.surface.heightMm === 1000, `the measured size is saved for the designer: ${JSON.stringify(wall.surface)}`);
 
@@ -1557,6 +1627,21 @@ export const scenarios = [
       assert(centre[3] === 255 && centre[0] + centre[1] + centre[2] > 150, `tiles in the marked area (${centre})`);
       assert(top[3] === 0, `nothing above it (${top})`);
       await shot('tiled');
+
+      // Something 25–40 cm in front of the wall (a basin, a foot): the tiles aren't drawn over it.
+      await page.evaluate(() => {
+        window.__fakeXr.box = { min: [-0.15, 1.35, -1.75], max: [0.15, 1.65, -1.6] };
+      });
+      await frames();
+      const hidden = await page.evaluate(() => window.__fakeXr.pixels);
+      assert(hidden.centre[3] === 0, `no tiles over the thing in front (${hidden.centre})`);
+      assert(hidden.side[3] === 255, `tiles beside it (${hidden.side})`);
+      await shot('in-front');
+      await page.evaluate(() => {
+        window.__fakeXr.box = null;
+      });
+      await frames();
+      assert((await page.evaluate(() => window.__fakeXr.pixels)).centre[3] === 255, 'the tiles come back when it goes');
 
       // A finger dragged 150 mm to the right slides the pattern.
       const before = wall.alignment;
@@ -1579,6 +1664,9 @@ export const scenarios = [
       assert((await savedDesign()).wall.layout.seriesId === 'demo-azure-medallion', 'the series is saved');
 
       // A plain wall by its base: two points where it meets the floor (just in front of the wall), then its top.
+      await page.evaluate(() => {
+        window.__fakeXr.wallError = 0;
+      });
       await press(page, device, '.ar-controls button:text-is("Mark again")');
       await press(page, device, '.ar-modes button:text-is("Wall by its base")');
       await statusHas('Plain wall: aim where the wall meets the floor');

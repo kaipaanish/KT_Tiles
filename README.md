@@ -592,6 +592,25 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - A registered tap buzzes the phone and says so. A tap or drag that fails says why, on screen.
     - The stand-in for WebXR now refuses the phone's position on a tap's frame, as Chrome does. Against the broken version it fails exactly as the phone did.
 
+**Depth: things in front, and tiles on the surface**
+
+101. **Things in front hide the tiles.**
+    - On the phone, a foot on the floor's tiles was drawn over.
+    - Each frame, the phone's depth picture is uploaded as a texture. Each tile fragment compares its own depth along the view with the real depth at its pixel.
+    - Up to 3 cm in front counts as the surface itself, because the sensor is noisy. From 7 cm in front, the tile isn't drawn; in between it fades.
+    - Readings are taken exactly, not blended: a reading is packed in two bytes, and blending bytes of neighbouring readings would be nonsense. So the edges follow the depth picture's coarse grid.
+102. **Tiles are moved onto the real surface.**
+    - On the phone the tiles seemed to float a few centimetres off the wall, because the phone's own estimate of a surface can be off by that much.
+    - After a surface is tiled, the depth sensor is read at a 5 × 5 grid on it for 15 frames (half a second). The median distance from the marked plane is taken, ignoring readings over 25 cm off, which are things in front.
+    - The tiles move by that much if it is 5 mm or more, and the screen says by how much.
+103. **The aim's distance is the straight distance to the surface.**
+    - The user found it 10–15 cm more than a tape measure. Along the line of sight, a slanted aim reads longer than the straight distance (25° off at 1.2 m adds about 12 cm).
+    - It now reads straight out from the surface.
+104. **Measuring is accurate to about the aiming.** On the phone, one real 450 × 300 mm tile, marked joint to joint, measured 470 × 320 mm. That is about how precisely a ring can be put on a joint, so no calibration was added.
+105. **The stand-in has a depth sensor too.** It sees the real room, plus a box that can be put in front of the wall, while its own estimate of the wall can be set a few centimetres out. `ar-fake` checks two things:
+    - with the estimate 5 cm out, the tiles are moved onto the wall by 5 cm;
+    - with a box in front, there are no tiles over it but tiles beside it, and they come back when the box goes.
+
 ## Step 1 checklist
 
 What "done" means for step 1, and how each item is verified. "Browser check" is a scenario in `scripts/check-scenarios.mjs`, run on the phone (real touch events) and on desktop.
@@ -643,4 +662,7 @@ Step 3a tested AR on a real phone. 3b tiles a real wall or floor. 3c (realism: t
 | 3b: mark a real wall by two corners (a floor by three points, a plain wall by its base) and see it tiled at its measured size, anchored | Verified with the stand-in; **phone to try** | `ar-fake`: the measured 1.20 × 1.00 m wall is tiled where marked and nowhere else; a 1.60 × 2.20 m wall by its base. Unit tests for every way of marking |
 | 3b: drag on the tiles slides the pattern with the designer's snapping; Series and Preset switch | Verified with the stand-in; **phone to try** | `ar-fake` drags 150 mm and the pattern moves; Series switches to Demo Azure Medallion |
 | 3b: the measured surface and design carry to the designer and its Count tab | Done | `ar-fake` opens the designer afterwards: wall 1600 × 2200 mm, in the series chosen in AR |
-| All tests pass, including steps 1 and 2 | Done | `npm test`: 214 tests. Browser check: 68 pages, no console errors |
+| 3b on the phone: walls and floors marked and tiled, measured sizes right | Done on the user's phone | A wall and a floor tiled at about 30 fps. One real 450 × 300 mm tile measured 470 × 320 mm, within aiming precision (decision 104) |
+| 3c: things in front (a foot, a basin) show in front of the tiles | Verified with the stand-in; **phone to try** | `ar-fake`: no tiles over a box in front of the wall, tiles beside it (decision 101) |
+| 3c: tiles sit on the real surface, not in front of it | Verified with the stand-in; **phone to try** | `ar-fake`: a wall estimate 5 cm out is corrected by 5 cm with depth (decision 102); unit tests for the depth maths |
+| All tests pass, including steps 1 and 2 | Done | `npm test`: 220 tests. Browser check: 68 pages, no console errors |

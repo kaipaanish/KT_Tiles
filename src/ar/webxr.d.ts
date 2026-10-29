@@ -93,8 +93,21 @@ interface XRPlane {
   readonly orientation?: 'horizontal' | 'vertical';
 }
 
+/** A frame's depth picture for one view, on the CPU: metres = raw value × rawValueToMeters. */
+interface XRCPUDepthInformation {
+  readonly width: number;
+  readonly height: number;
+  /** Normalised view coordinates (0–1 from the view's top-left) → normalised depth-picture coordinates. */
+  readonly normDepthBufferFromNormView: XRRigidTransform;
+  readonly rawValueToMeters: number;
+  readonly data: ArrayBuffer;
+  /** Depth (metres along the view's −z) at normalised view coordinates. */
+  getDepthInMeters(x: number, y: number): number;
+}
+
 interface XRFrame {
   readonly session: XRSession;
+  getDepthInformation?(view: XRView): XRCPUDepthInformation | null;
   getViewerPose(referenceSpace: XRReferenceSpace): XRViewerPose | null;
   getPose(space: XRSpace, baseSpace: XRSpace): XRPose | null;
   getHitTestResults(source: XRHitTestSource): readonly XRHitTestResult[];

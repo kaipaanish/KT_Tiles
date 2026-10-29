@@ -12,13 +12,14 @@
 import './ar.css';
 import { catalog } from '../designs/catalog';
 import { countTiles, layoutSurface, presetsFor, type LayoutResult, type Point } from '../engine';
-import { ArRenderer, type ArRect, type ArRing } from '../render/webgl/arRenderer';
+import { ArRenderer, type ArDepth, type ArRect, type ArRing } from '../render/webgl/arRenderer';
 import { TextureCache } from '../render/textureCache';
 import * as act from '../state/actions';
 import { activePlan, type DesignDoc } from '../state/document';
 import { DESIGN_KEY, serializeDesign, writeStorage } from '../state/persist';
 import { openingDesign } from '../ui/app';
 import { h } from '../ui/dom';
+import { distanceToPlane, fromDepth, samplePoints, shifted, surfaceOffset, toNormView } from './depth';
 import { floorFromCorners, intersectPlane, poseRay, rectOn, ringOn, surfaceMm, wallFromBase, wallFromCorners, wallUpTo, type MarkedSurface, type Ray } from './marking';
 import { invertPose, multiply, surfaceFrame, surfaceToRoom, type SurfaceFrame, type SurfaceKind, type Vec3 } from './surfaceFrame';
 import { checkArSupport, startArSession } from './xrSession';
@@ -192,6 +193,9 @@ export function startAr(root: HTMLElement): void {
     let fpsFrom = 0;
     let shown = 0;
     let saved = 0;
+    /** Depth readings on the marked surface, gathered over a few frames after it is tiled, to move it onto the real one. */
+    let snap: { frames: number; points: Vec3[] } | null = null;
+    let depthReport = xr.depthUsage ? 'on' : 'not available on this phone';
 
     // ---- The design on the marked surface
     function layout(): LayoutResult | null {
@@ -216,6 +220,7 @@ export function startAr(root: HTMLElement): void {
       step = { step: 'tiled', surface };
       const model = surfaceToRoom(surface.frame, { x: 0, y: 0 });
       local = anchor && anchorPose ? multiply(invertPose(anchorPose), model) : null;
+      snap = xr.depthUsage ? { frames: 0, points: [] } : null;
       presetIndex = -1;
       message = '';
       keepDesign();
@@ -486,7 +491,7 @@ export function startAr(root: HTMLElement): void {
         if (hitPose) {
           const m = hitPose.transform.matrix;
           const surface = surfaceFrame(m, viewer);
-          aim = { kind: surface.kind, distance: Math.hypot(m[12]! - viewer[0], m[13]! - viewer[1], m[14]! - viewer[2]) };
+          aim = { kind: surface.kind, distance: distanceToPlane(viewer, surface) };
           rings.push({ model: ringOn(surface, surface.origin, AIM_M), colour: COLOURS[surface.kind] });
         }
       } else if (step.step !== 'tiled') {
@@ -495,7 +500,7 @@ export function startAr(root: HTMLElement): void {
         for (const corner of markedCorners()) rings.push({ model: ringOn(plane, corner, CORNER_M), colour: COLOURS.mark });
         if (point) {
           rings.push({ model: ringOn(plane, point, AIM_M), colour: COLOURS[plane.kind] });
-          aim = { kind: plane.kind, distance: Math.hypot(point[0] - viewer[0], point[1] - viewer[1], point[2] - viewer[2]) };
+          aim = { kind: plane.kind, distance: distanceToPlane(viewer, plane) };
           const preview = previewTo(point);
           if (preview) rects.push({ model: rectOn(preview.frame, preview.frame.origin, preview.widthMm / 1000, preview.heightMm / 1000), size: [preview.widthMm / 1000, preview.heightMm / 1000], colour: COLOURS[preview.kind] });
         }
@@ -507,10 +512,69 @@ export function startAr(root: HTMLElement): void {
         const viewport = layer.getViewport(view);
         if (!viewport) continue;
         gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-        renderer.draw(view.projectionMatrix, view.transform.inverse.matrix, { patches, rects, rings }, { groutMm: doc.settings.groutMm, groutColor: doc.settings.groutColor });
+        const depth = depthFor(frame, view, viewport);
+        if (depth && view === pose.views[0]) snapToDepth(view, depth.info);
+        renderer.draw(view.projectionMatrix, view.transform.inverse.matrix, { patches, rects, rings }, { groutMm: doc.settings.groutMm, groutColor: doc.settings.groutColor }, depth?.picture ?? null);
       }
       updateText(false, time);
     };
+
+    /** A view's depth picture from the depth sensor, where the phone has one. */
+    function depthFor(frame: XRFrame, view: XRView, viewport: XRViewport): { info: XRCPUDepthInformation; picture: ArDepth } | null {
+      if (!xr.depthUsage || !frame.getDepthInformation) return null;
+      try {
+        const info = frame.getDepthInformation(view);
+        if (!info) return null;
+        const picture: ArDepth = {
+          width: info.width,
+          height: info.height,
+          data: info.data,
+          float: xr.depthDataFormat === 'float32',
+          rawToMeters: info.rawValueToMeters,
+          uvMatrix: info.normDepthBufferFromNormView.matrix,
+          viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
+        };
+        depthReport = `on (${info.width} × ${info.height})`;
+        return { info, picture };
+      } catch (error) {
+        depthReport = `failed: ${error instanceof Error ? error.message : String(error)}`;
+        return null;
+      }
+    }
+
+    /**
+     * Just after a surface is tiled: reads the depth sensor at a grid of points on it for a few
+     * frames, and moves the tiles onto the real surface, which can lie a few centimetres from
+     * where the phone's own estimate put it.
+     */
+    function snapToDepth(view: XRView, info: XRCPUDepthInformation): void {
+      if (!snap || step.step !== 'tiled') return;
+      const surface = step.surface;
+      for (const p of samplePoints(surface)) {
+        const seen = toNormView(view.projectionMatrix, view.transform.inverse.matrix, p);
+        if (!seen) continue;
+        const depth = info.getDepthInMeters(seen.x, seen.y);
+        if (depth > 0) snap.points.push(fromDepth(view.projectionMatrix, view.transform.matrix, seen.x, seen.y, depth));
+      }
+      if (++snap.frames < 15) return;
+      const offset = surfaceOffset(snap.points, surface.frame);
+      snap = null;
+      const word = surface.kind === 'wall' ? 'wall' : 'floor';
+      if (offset === null) {
+        message = `Couldn't check the ${word} with depth: keep it in view.`;
+        return;
+      }
+      const cm = Math.round(Math.abs(offset) * 100);
+      if (Math.abs(offset) < 0.005) {
+        message = `Checked with depth: the tiles sit on the ${word}.`;
+        return;
+      }
+      const moved = shifted(surface, offset);
+      step = { step: 'tiled', surface: moved };
+      const model = surfaceToRoom(moved.frame, { x: 0, y: 0 });
+      if (local && anchorPose) local = multiply(invertPose(anchorPose), model);
+      message = `Moved onto the ${word} by ${cm} cm (checked with depth).`;
+    }
 
     /** The plane being marked, for drawing rings on it. */
     function markingFrame(): SurfaceFrame {
@@ -568,7 +632,8 @@ export function startAr(root: HTMLElement): void {
     function statusLines(): string[] {
       return [
         `Tracking: ${tracking} · ${fps} fps`,
-        `Aiming at: ${aim ? `${aim.kind}, ${aim.distance.toFixed(2)} m away` : 'nothing yet'}`,
+        `Aiming at: ${aim ? `${aim.kind}, ${aim.distance.toFixed(2)} m away (straight out)` : 'nothing yet'}`,
+        `Depth: ${depthReport}`,
         ...(message ? [message] : []),
       ];
     }

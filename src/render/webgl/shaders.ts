@@ -94,31 +94,63 @@ out vec2 v_local;
 out vec2 v_uv;
 flat out vec2 v_size;
 flat out vec4 v_joints;
+out float v_depth;
 void main() {
-  gl_Position = u_projection * u_view * u_model * vec4(a_position, 0.0, 1.0);
+  vec4 seen = u_view * u_model * vec4(a_position, 0.0, 1.0);
+  gl_Position = u_projection * seen;
   v_local = a_local;
   v_uv = a_uv;
   v_size = a_size;
   v_joints = a_joints;
+  // Depth along the view, as the phone's depth sensor measures it.
+  v_depth = -seen.z;
 }
 `;
 
-/** AR: a tile's texture with grout, opaque over the camera picture. */
+/**
+ * AR: a tile's texture with grout, over the camera picture, except where the phone's depth
+ * sensor sees something real in front of it (a foot, a basin): there the tile isn't drawn.
+ * u_depthMode: 0 no depth; 1 two bytes per reading (luminance-alpha or unsigned-short); 2 float.
+ */
 export const AR_TILE_FRAGMENT = `#version 300 es
 precision highp float;
 uniform sampler2D u_tile;
 uniform vec3 u_grout;
 uniform float u_groutMm;
+uniform sampler2D u_depth;
+uniform mat4 u_depthUv;
+uniform float u_rawToMeters;
+uniform vec4 u_viewport;
+uniform int u_depthMode;
 in vec2 v_local;
 in vec2 v_uv;
 flat in vec2 v_size;
 flat in vec4 v_joints;
+in float v_depth;
 out vec4 outColor;
 ${GROUT}
+/** The real world's depth (metres) at this pixel, or 0 where the sensor has no reading. */
+float realDepth() {
+  // Normalised view coordinates run from the view's top-left; the framebuffer's rows from its bottom.
+  vec2 view = vec2((gl_FragCoord.x - u_viewport.x) / u_viewport.z, 1.0 - (gl_FragCoord.y - u_viewport.y) / u_viewport.w);
+  vec2 uv = (u_depthUv * vec4(view, 0.0, 1.0)).xy;
+  if (u_depthMode == 1) {
+    vec2 bytes = texture(u_depth, uv).rg;
+    return (bytes.r * 255.0 + bytes.g * 255.0 * 256.0) * u_rawToMeters;
+  }
+  return texture(u_depth, uv).r * u_rawToMeters;
+}
 void main() {
+  float shown = 1.0;
+  if (u_depthMode > 0) {
+    float real = realDepth();
+    // Up to 3 cm in front is the wall itself (the sensor's noise); 7 cm or more is a thing in front.
+    if (real > 0.0) shown = smoothstep(-0.07, -0.03, real - v_depth);
+  }
+  if (shown <= 0.0) discard;
   vec3 colour = texture(u_tile, v_uv).rgb;
   colour = mix(colour, u_grout, groutAmount(v_local, v_size, v_joints, u_groutMm));
-  outColor = vec4(colour, 1.0);
+  outColor = vec4(colour * shown, shown);
 }
 `;
 

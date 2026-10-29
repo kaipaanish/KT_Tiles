@@ -585,6 +585,12 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - a drag moving the pattern, and a series switch;
     - a plain wall marked by its base;
     - the designer opening with the measured wall and the series chosen in AR.
+100. **A tap uses the last drawn frame's aim.**
+    - On the phone, taps to mark a corner did nothing.
+    - The cause: the tap handler asked the tap's own frame for the phone's position. Chrome gives that only in frames it is drawing, so it threw and the tap was lost.
+    - Now the aim comes from the last drawn frame, at most 1/30 s old. The tap's frame is still used for the hit test, which the anchor needs.
+    - A registered tap buzzes the phone and says so. A tap or drag that fails says why, on screen.
+    - The stand-in for WebXR now refuses the phone's position on a tap's frame, as Chrome does. Against the broken version it fails exactly as the phone did.
 
 ## Step 1 checklist
 

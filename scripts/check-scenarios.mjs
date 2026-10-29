@@ -238,9 +238,14 @@ function fakeWebXr() {
   const pose = (matrix, inverse = matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, inverse: { matrix: inverse } } });
   const touchSpace = {};
   const inputSource = { targetRayMode: 'screen', targetRaySpace: touchSpace };
-  const frame = (session) => ({
+  // As in Chrome, only frames handed to requestAnimationFrame can give the phone's position; a
+  // tap's frame refuses (an earlier version lost every tap to this on a real phone).
+  const frame = (session, animation) => ({
     session,
-    getViewerPose: () => ({ ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: state.view } } }] }),
+    getViewerPose: () => {
+      if (!animation) throw new DOMException('getViewerPose can only be called on frames passed to a callback of requestAnimationFrame()', 'InvalidStateError');
+      return { ...pose(state.camera, state.view), views: [{ eye: 'none', projectionMatrix: projection, transform: { inverse: { matrix: state.view } } }] };
+    },
     getHitTestResults: () => {
       const m = hitFrom(state.camera);
       if (!m) return [];
@@ -277,7 +282,7 @@ function fakeWebXr() {
     requestAnimationFrame(callback) {
       setTimeout(() => {
         if (this.ended) return;
-        callback(performance.now(), frame(this));
+        callback(performance.now(), frame(this, true));
         const gl = state.gl;
         const read = (x, y) => {
           const out = new Uint8Array(4);
@@ -295,7 +300,7 @@ function fakeWebXr() {
     }
     fire(type) {
       const event = new Event(type);
-      event.frame = frame(this);
+      event.frame = frame(this, false);
       event.inputSource = inputSource;
       this.dispatchEvent(event);
     }

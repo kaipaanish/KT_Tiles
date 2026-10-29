@@ -302,14 +302,37 @@ export function startAr(root: HTMLElement): void {
 
     // ---- Taps: mark the next corner (aiming with the ring in the middle of the screen)
     xr.addEventListener('select', (event: XRInputSourceEvent) => {
+      try {
+        markCorner(event.frame);
+      } catch (error) {
+        message = `That tap didn't work: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    });
+
+    /** A short buzz: the tap registered. */
+    const registered = () => navigator.vibrate?.(30);
+
+    /**
+     * Marks the next corner where the ring is. The aim is the last drawn frame's: a tap's own
+     * frame can't give the phone's position (Chrome refuses it outside drawing, and an earlier
+     * version lost every tap that way), but it can give the hit test, which the anchor needs.
+     */
+    function markCorner(eventFrame: XRFrame): void {
       if (step.step === 'tiled') return;
-      const viewerPose = event.frame.getViewerPose(room);
-      if (!viewerPose) return;
-      const ray = poseRay(viewerPose.transform.matrix);
-      const p = viewerPose.transform.position;
-      viewer = [p.x, p.y, p.z];
+      const before = step;
+      advance(eventFrame);
+      if (step !== before) registered();
+    }
+
+    function advance(eventFrame: XRFrame): void {
+      if (step.step === 'tiled') return;
+      const ray = aimRay;
+      if (!ray) {
+        message = 'Not tracking yet: move the phone slowly.';
+        return;
+      }
       if (step.step === 'first') {
-        const hit = hitSource ? event.frame.getHitTestResults(hitSource)[0] : undefined;
+        const hit = hitSource ? eventFrame.getHitTestResults(hitSource)[0] : undefined;
         const pose = hit?.getPose(room);
         if (!hit || !pose) {
           message = 'No surface under the ring yet: move the phone slowly over it.';
@@ -340,6 +363,7 @@ export function startAr(root: HTMLElement): void {
         if (mode === 'wall') step = { step: 'wall-second', first: frame };
         else if (mode === 'floor') step = { step: 'floor-second', a: frame.origin, normal: frame.normal };
         else step = { step: 'base-second', a: frame.origin };
+        message = 'Corner marked.';
         renderControls();
         return;
       }
@@ -354,6 +378,7 @@ export function startAr(root: HTMLElement): void {
         else message = 'Too small: aim further from the first corner.';
       } else if (step.step === 'floor-second') {
         step = { step: 'floor-third', a: step.a, b: point, normal: step.normal };
+        message = 'Corner marked.';
         renderControls();
       } else if (step.step === 'floor-third') {
         const floor = floorFromCorners(step.a, step.b, point, step.normal);
@@ -363,6 +388,7 @@ export function startAr(root: HTMLElement): void {
         const base = wallFromBase(step.a, point, viewer);
         if (base) {
           step = { step: 'base-top', a: step.a, base };
+          message = 'Base marked.';
           renderControls();
         } else message = 'Too short: aim further along the wall.';
       } else if (step.step === 'base-top') {
@@ -370,7 +396,7 @@ export function startAr(root: HTMLElement): void {
         if (wall) tile(wall);
         else message = 'Aim higher up the wall.';
       }
-    });
+    }
 
     /** Where a ray meets the surface being marked (after its first corner). */
     function aimPoint(ray: Ray): Vec3 | null {
@@ -392,11 +418,16 @@ export function startAr(root: HTMLElement): void {
     // ---- Drags on the tiles: slide the pattern, as in the designer
     xr.addEventListener('selectstart', (event: XRInputSourceEvent) => {
       if (step.step !== 'tiled' || drag) return;
-      const pose = event.frame.getPose(event.inputSource.targetRaySpace, room);
-      const current = layout();
-      const from = pose && surfaceMm(poseRay(pose.transform.matrix), step.surface.frame);
-      if (!from || !current) return;
-      drag = { source: event.inputSource, from, start: { origin: current.origin, overrides: activePlan(doc).overrides, tile: current.tile }, doc };
+      try {
+        // A touch's own ray, which a tap's frame can give (unlike the phone's position).
+        const pose = event.frame.getPose(event.inputSource.targetRaySpace, room);
+        const current = layout();
+        const from = pose && surfaceMm(poseRay(pose.transform.matrix), step.surface.frame);
+        if (!from || !current) return;
+        drag = { source: event.inputSource, from, start: { origin: current.origin, overrides: activePlan(doc).overrides, tile: current.tile }, doc };
+      } catch (error) {
+        message = `That drag didn't work: ${error instanceof Error ? error.message : String(error)}`;
+      }
     });
     xr.addEventListener('selectend', (event: XRInputSourceEvent) => {
       if (!drag || event.inputSource !== drag.source) return;
@@ -406,6 +437,7 @@ export function startAr(root: HTMLElement): void {
 
     function followDrag(frame: XRFrame): void {
       if (!drag || step.step !== 'tiled') return;
+      // The touch may have ended between frames: its space then has no pose.
       const pose = frame.getPose(drag.source.targetRaySpace, room);
       const to = pose && surfaceMm(poseRay(pose.transform.matrix), step.surface.frame);
       if (!to) return;

@@ -12,7 +12,7 @@ The layout engine has no DOM or canvas code, so photo mode and AR reuse its outp
 
 **Status:**
 - Step 1 is complete; see the [checklist](#step-1-checklist). Two things still need a real Android phone: smooth dragging, and sharing to WhatsApp.
-- Step 3a, a first AR test, is built; see the [checklist](#step-3-checklist). It needs trying on an Android phone.
+- Step 3a, a first AR test, is done; see the [checklist](#step-3-checklist). On the user's Android phone AR started with every feature (depth, lighting, anchors, plane detection), found a wall and the floor, kept placed tiles anchored, and ran at 30 fps.
 - Step 2 is complete in the browser; see the [checklist](#step-2-checklist). Photo mode opens a photo from the camera, the gallery or a sample, and finds the walls and floor in it on the device. You tap a wall or the floor, fit its corners and confirm its real size; its tiles are then drawn on the photo in perspective, behind fixtures, with the room's lighting. Each surface keeps its own design. The pattern can be dragged on the photo, a brush corrects where tiles go, a before/after line compares, and Share sends the photo with its tiles. Still to try on a real phone: the camera, WhatsApp, and timings.
 
 ## Using it
@@ -600,9 +600,9 @@ Step 3a is a test on a real phone; its answers shape 3b (the real thing) and 3c 
 
 | Item | Status | Evidence |
 | --- | --- | --- |
-| AR starts on an Android phone in Chrome, on the deployed HTTPS site | **Phone to try** | The report on screen says which attempt worked. In the browser, `ar-fake` starts a session with a stand-in for WebXR |
-| A ring appears on walls and on the floor | **Phone to try** | "Aiming at" in the report. `ar-fake`: "wall, 2.00 m away" |
-| A tap places a 1 m square of the design, drawn in perspective with grout, and it stays put while walking around | Drawing verified with the stand-in; **phone to try** | `ar-fake` reads the GPU's pixel beside the ring before and after the tap; unit tests for the surface frames, the mm-to-metre placement and anchors |
-| The phone's features (depth, lighting, anchors, plane detection) and frame rate are known | **Phone to try** | The report lists them, during and after a session |
+| AR starts on an Android phone in Chrome, on the deployed HTTPS site | Done on the user's phone | Started on the first attempt, with every feature asked for. In the browser, `ar-fake` starts a session with a stand-in for WebXR |
+| A ring appears on walls and on the floor | Done on the user's phone | Plane detection found 1 wall and 3 level surfaces; squares were placed on a wall and on the floor. `ar-fake`: "wall, 2.00 m away" |
+| A tap places a 1 m square of the design, drawn in perspective with grout, and it stays put while walking around | Done on the user's phone: 3 squares placed, all anchored, and they stayed put | `ar-fake` reads the GPU's pixel beside the ring before and after the tap; unit tests for the surface frames, the mm-to-metre placement and anchors |
+| The phone's features (depth, lighting, anchors, plane detection) and frame rate are known | Done on the user's phone | Granted: hit test, anchors, plane detection, light estimation, DOM overlay, and depth sensing (CPU, luminance-alpha). 30 fps with tracking "good". The first try crashed Chrome on Exit AR (decision 94); fixed |
 | Where AR can't run, the screen says what it needs | Done | `ar-unsupported` (headless Chrome on a laptop) |
 | All tests pass, including steps 1 and 2 | Done | `npm test`: 207 tests. Browser check: 68 pages, no console errors |

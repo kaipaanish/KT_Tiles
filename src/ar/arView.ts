@@ -76,6 +76,12 @@ export function startAr(root: HTMLElement): void {
   // Taps on the buttons mustn't also place tiles.
   controls.addEventListener('beforexrselect', (event) => event.preventDefault());
   root.replaceChildren(screen, overlay);
+  // The report of the last session, if there was one: still there after a crash and a reload.
+  const previous = savedReport();
+  if (previous) {
+    report.hidden = false;
+    report.textContent = [`Last session (${new Date(previous.at).toLocaleString()}):`, ...previous.lines].join('\n');
+  }
 
   void checkArSupport().then((result) => {
     support.textContent = result.ok ? 'This phone can run AR.' : result.reason;
@@ -258,20 +264,51 @@ export function startAr(root: HTMLElement): void {
       ];
     }
 
+    const fullReport = () => [...statusLines(), ...(failures.length ? ['Tried first:', ...failures] : [])];
+    let saved = 0;
+
     function updateStatus(time: number): void {
       if (time - shown < 250) return;
       shown = time;
       status.textContent = statusLines().join('\n');
+      // Kept on the phone every second, so a crash doesn't lose it.
+      if (time - saved >= 1000) {
+        saved = time;
+        saveReport(fullReport());
+      }
     }
 
+    // When the session ends, the browser has already let go of its anchors and hit test, so they
+    // aren't touched here: deleting them after the end crashed Chrome on a phone ("Aw, Snap").
     xr.addEventListener('end', () => {
-      hitSource?.cancel();
-      for (const patch of placed) patch.anchor?.delete();
+      const lines = fullReport();
+      saveReport(lines);
       overlay.hidden = true;
       start.disabled = false;
       report.hidden = false;
-      report.textContent = ['Last session:', ...statusLines(), ...(failures.length ? ['Tried first:', ...failures] : [])].join('\n');
+      report.textContent = ['Last session:', ...lines].join('\n');
     });
     xr.requestAnimationFrame(onFrame);
+  }
+}
+
+const REPORT_KEY = 'kt-ar-report';
+
+/** The last session's report, kept on the phone (text only: no camera image is ever kept). */
+function saveReport(lines: string[]): void {
+  try {
+    localStorage.setItem(REPORT_KEY, JSON.stringify({ at: Date.now(), lines }));
+  } catch {
+    // Storage full or off: the report on screen still shows.
+  }
+}
+
+function savedReport(): { at: number; lines: string[] } | null {
+  try {
+    const raw = localStorage.getItem(REPORT_KEY);
+    const parsed = raw ? (JSON.parse(raw) as { at?: unknown; lines?: unknown }) : null;
+    return parsed && typeof parsed.at === 'number' && Array.isArray(parsed.lines) ? { at: parsed.at, lines: parsed.lines.map(String) } : null;
+  } catch {
+    return null;
   }
 }

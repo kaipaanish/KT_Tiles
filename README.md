@@ -552,6 +552,10 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - It runs the real screen, session code, maths and renderer. It checks the features asked for, the aim ("wall, 2.00 m away"), a tap placing an anchored square, and the GPU's pixel beside the ring, then Undo and the report after Exit.
     - `ar-unsupported` checks that a laptop gets the explanation.
     - Real tracking, frame rate and what the phone grants can only be seen on a phone.
+94. **Nothing of a session is touched after it ends, and the report is kept on the phone.**
+    - On the first phone test, AR started, found the wall and kept the tiles anchored, but Chrome crashed ("Aw, Snap") on Exit AR.
+    - The likely cause: the code deleted the session's anchors and cancelled its hit test after the session had ended. Ending the session releases both anyway, so they are now left alone.
+    - The report is saved on the phone every second and at the end, so it shows again after a crash and a reload. It is text only: no camera image is ever kept.
 
 ## Step 1 checklist
 

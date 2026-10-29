@@ -1458,6 +1458,11 @@ export const scenarios = [
       await page.locator('.ar-report:has-text("Last session:")').waitFor({ timeout: 3000 });
       assert((await page.locator('.ar-report').textContent()).includes('Features granted: hit-test, dom-overlay, anchors, plane-detection'), 'the report lists the features');
       await shot('report');
+      // The report is kept on the phone: after a crash and a reload, it's still there.
+      await page.reload();
+      await page.waitForSelector('body[data-ready="true"]', { timeout: 5000 });
+      const kept = (await page.locator('.ar-report').textContent()) ?? '';
+      assert(kept.startsWith('Last session (') && kept.includes('Placed: 0') && kept.includes('Features granted: hit-test'), `the report survives a reload: "${kept.slice(0, 80)}"`);
     },
   },
 ];

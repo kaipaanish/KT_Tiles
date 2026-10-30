@@ -603,11 +603,11 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - On the phone, a foot on the floor's tiles was drawn over.
     - Each frame, the phone's depth picture is uploaded as a texture. Each tile fragment compares its own depth along the view with the real depth at its pixel.
     - Up to 3 cm in front counts as the surface itself, because the sensor is noisy. From 7 cm in front, the tile isn't drawn; in between it fades.
-    - Readings are taken exactly, not blended: a reading is packed in two bytes, and blending bytes of neighbouring readings would be nonsense. So the edges follow the depth picture's coarse grid.
+    - Readings are taken exactly, not blended: a reading is packed in two bytes, and blending bytes of neighbouring readings would be nonsense. So the edges follow the depth picture's coarse grid. (Changed in decision 114.)
 102. **Tiles are moved onto the real surface.**
     - On the phone the tiles seemed to float a few centimetres off the wall, because the phone's own estimate of a surface can be off by that much.
     - After a surface is tiled, the depth sensor is read at a 5 × 5 grid on it for 15 frames (half a second). The median distance from the marked plane is taken, ignoring readings over 25 cm off, which are things in front.
-    - The tiles move by that much if it is 5 mm or more, and the screen says by how much.
+    - The tiles move by that much if it is 5 mm or more, and the screen says by how much. (Replaced by decision 113.)
 103. **The aim's distance is the straight distance to the surface.**
     - The user found it 10–15 cm more than a tape measure. Along the line of sight, a slanted aim reads longer than the straight distance (25° off at 1.2 m adds about 12 cm).
     - It now reads straight out from the surface.
@@ -643,6 +643,39 @@ These came from two photos of a real wall: a large textured one with stripes, ph
     - Its light estimate reflects half the light. With Light on, the tiles must be at least 10% darker than with it off.
     - Its camera picture is plain blue. A picture must have the blue at the top and tiles in the middle.
     - `ar-fake` also drags a corner (1.20 × 1.00 m becomes 1.10 × 0.90 m) and checks the size is saved.
+
+**From the second phone test: floating, flicker, corners**
+
+112. **Walls are plumb and floors are level.**
+    - On the phone the tiles still seemed to float up close. Seen from the side, one patch stood out from the wall.
+    - The likely cause: the phone's own estimate of a wall can lean or turn a few degrees, so one side of a patch stands off the wall. That shows more up close.
+    - A wall's normal is now made horizontal and a floor's points straight up. Rooms are built that way, and it removes the lean.
+113. **The depth check fits the wall's turn as well as its distance, and acts only when it's sure.**
+    - The old check moved the tiles by the median distance of the depth readings. On the phone it once said "Moved onto the wall by 10 cm", which was wrong; readings off the patch's sides or behind it were the likely cause.
+    - Now it keeps readings within 25 cm of the marked plane and drops those more than 2.5 × the median deviation from the median.
+    - For a wall, it finds the turn from the readings as seen from above, if they spread at least 15 cm across. The wall stays plumb.
+    - It acts only when the readings lie within 2 cm of the fitted plane, the turn is at most 10° and the move at most 6 cm. Otherwise it keeps the phone's own surface, and the screen says why.
+    - The patch keeps its width and height. It turns and moves onto the fitted plane.
+114. **Things in front have soft edges, and they don't flicker.**
+    - On the phone, the edges where a foot hid the tiles were blocky and flickered a lot.
+    - The depth picture is now converted to metres on the CPU and eased over frames: 35% of the way each frame, or 60% for a jump of more than 25 cm, so a moving foot isn't left behind.
+    - It is uploaded as metres, so neighbouring readings can be blended. Each pixel blends its four nearest readings, skipping missing ones.
+    - Up to 4 cm in front counts as the surface; from 9 cm in front the tile isn't drawn (it was 3 and 7 cm).
+    - The depth picture is coarse (160 × 90 on the user's phone), so edges are soft rather than exact.
+115. **The ring carries on along a wall into its edges and corners.**
+    - On the phone, the crosshair disappeared near a wall's corners: there are few features there, so the hit test finds nothing.
+    - The last wall or floor found is remembered for 10 s. Where the hit test finds nothing, the ring goes where the aim meets that plane. It does the same for a wall turned more than 30° from it within 1.5 s of last seeing it (the next wall, at a room's corner).
+    - It doesn't where something real is more than 15 cm nearer, such as the floor in front of the wall. There the hit test's own surface wins, so a floor tap in Wall mode is still refused.
+    - A corner marked there has no hit to anchor to, so it is anchored at its own pose.
+    - The first instruction now says to start in the middle of the wall.
+116. **After Exit AR the page scrolls, and a picture flashes the screen.**
+    - After Exit AR, the pictures and Share were below the screen and the page couldn't scroll: the app's frame is fixed to the screen. The AR screen now scrolls on its own.
+    - The phone didn't buzz when a picture was taken. Phone settings or battery saver can stop vibration, so a white flash now shows it too.
+117. **The stand-in's wall estimate can be turned, and its hit test can miss near the wall's edges.** `ar-fake` checks:
+    - a wall estimate 3 cm out and turned 4° is turned and moved onto the wall;
+    - with no hits more than 30 cm right of the middle, the ring carries on and a corner is marked there;
+    - a floor tap in Wall mode is still refused;
+    - after Exit, the screen scrolls down to Share.
 
 ## Step 1 checklist
 
@@ -696,9 +729,9 @@ Step 3a tested AR on a real phone. 3b tiles a real wall or floor. 3c (realism: t
 | 3b: drag on the tiles slides the pattern with the designer's snapping; Series and Preset switch | Verified with the stand-in; **phone to try** | `ar-fake` drags 150 mm and the pattern moves; Series switches to Demo Azure Medallion |
 | 3b: the measured surface and design carry to the designer and its Count tab | Done | `ar-fake` opens the designer afterwards: wall 1600 × 2200 mm, in the series chosen in AR |
 | 3b on the phone: walls and floors marked and tiled, measured sizes right | Done on the user's phone | A wall and a floor tiled at about 30 fps. One real 450 × 300 mm tile measured 470 × 320 mm, within aiming precision (decision 104) |
-| 3c: things in front (a foot, a basin) show in front of the tiles | Verified with the stand-in; **phone to try** | `ar-fake`: no tiles over a box in front of the wall, tiles beside it (decision 101) |
-| 3c: tiles sit on the real surface, not in front of it | Verified with the stand-in; **phone to try** | `ar-fake`: a wall estimate 5 cm out is corrected by 5 cm with depth (decision 102); unit tests for the depth maths |
-| 3c: marking is steadier and corners can be fine-tuned | Verified with the stand-in; **phone to try** | `ar-fake`: taps with a jolt still mark where the aim was; a corner dragged 10 cm changes the size (decisions 106–108); unit tests |
-| 3c: the room's light on the tiles | Verified with the stand-in; **phone to try** | `ar-fake`: Light on darkens the tiles in a half-lit room, off undoes it (decision 109); unit tests for the light maths |
-| 3c: a picture of the AR view to share | Verified with the stand-in; **phone to try** | `ar-fake`: the picture has the camera's picture and the tiles, and a Share button after the session (decision 110) |
-| All tests pass, including steps 1 and 2 | Done | `npm test`: 227 tests. Browser check: 68 pages, no console errors |
+| 3c: things in front (a foot, a basin) show in front of the tiles | Worked on the phone but blocky and flickering; smoothed (decision 114), **phone to try again** | `ar-fake`: no tiles over a box in front of the wall, tiles beside it (decision 101) |
+| 3c: tiles sit on the real surface, not in front of it | Still floated up close on the phone; plumb walls and a careful depth check (decisions 112–113), **phone to try again** | `ar-fake`: a wall estimate 3 cm out and turned 4° is turned and moved onto the wall; unit tests for the depth fit and its limits |
+| 3c: marking is steadier and corners can be fine-tuned | Corners work on the phone; the ring now carries on into a wall's corners (decision 115), **phone to try** | `ar-fake`: taps with a jolt still mark where the aim was; a corner dragged 10 cm changes the size; a corner marked where the hit test finds nothing (decisions 106–108, 115); unit tests |
+| 3c: the room's light on the tiles | Fine on the user's phone for now | `ar-fake`: Light on darkens the tiles in a half-lit room, off undoes it (decision 109); unit tests for the light maths |
+| 3c: a picture of the AR view to share | 3 taken on the phone; they couldn't be reached after Exit, fixed (decision 116), **Share to try** | `ar-fake`: the picture has the camera's picture and the tiles, the screen scrolls down to its Share button after the session (decisions 110, 116) |
+| All tests pass, including steps 1 and 2 | Done | `npm test`: 230 tests. Browser check: 68 pages, no console errors |

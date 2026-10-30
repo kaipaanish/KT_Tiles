@@ -1,10 +1,35 @@
 /* Step 3a: the AR test screen, and what shows over the camera during a session. */
 
+/* The app's page doesn't scroll (the designer fills the screen), so the AR screen scrolls itself:
+   after a session, the report and the pictures can be longer than the screen. */
 .ar-screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
   max-width: 640px;
   margin: 0 auto;
   padding: 24px 16px 48px;
+  overflow-y: auto;
   line-height: 1.45;
+}
+
+/* A camera-shutter flash when a picture is taken. */
+.ar-flash {
+  position: fixed;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  animation: ar-flash 0.35s ease-out;
+}
+
+@keyframes ar-flash {
+  from {
+    opacity: 0.85;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 .ar-screen h1 {

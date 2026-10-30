@@ -61,6 +61,11 @@ interface XRRigidTransform {
   readonly inverse: XRRigidTransform;
 }
 
+declare var XRRigidTransform: {
+  prototype: XRRigidTransform;
+  new (position?: DOMPointInit, orientation?: DOMPointInit): XRRigidTransform;
+};
+
 interface XRPose {
   readonly transform: XRRigidTransform;
   readonly emulatedPosition: boolean;
@@ -128,6 +133,8 @@ interface XRFrame {
   readonly session: XRSession;
   getDepthInformation?(view: XRView): XRCPUDepthInformation | null;
   getLightEstimate?(probe: XRLightProbe): XRLightEstimate | null;
+  /** An anchor at a pose of one's own (the anchors module), not on a hit. */
+  createAnchor?(pose: XRRigidTransform, space: XRSpace): Promise<XRAnchor>;
   getViewerPose(referenceSpace: XRReferenceSpace): XRViewerPose | null;
   getPose(space: XRSpace, baseSpace: XRSpace): XRPose | null;
   getHitTestResults(source: XRHitTestSource): readonly XRHitTestResult[];

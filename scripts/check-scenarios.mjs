@@ -177,7 +177,9 @@ const alignX = (s) => s.doc.wall.alignment.x;
  * floor along the camera's ray. `select()` taps; `touchAt(point)`, `selectstart()` and `selectend()`
  * drag a finger. Its depth sensor sees the real room: the wall, the floor and `__fakeXr.box` (a
  * thing in front), while `__fakeXr.wallError` puts the phone's own estimate of the wall that far
- * in front of the real one. Its light estimate is even ambient light reflecting `__fakeXr.light`
+ * in front of the real one and `__fakeXr.wallYaw` turns it (degrees, about the vertical through
+ * x = 0). Its hit test finds no wall beyond `__fakeXr.hitGapFrom` (x, metres), as phones often
+ * don't near a wall's edges. Its light estimate is even ambient light reflecting `__fakeXr.light`
  * (0.5: half), and its camera's picture is plain blue (70, 130, 200). Its layer draws into the
  * app's own canvas, shown in a corner, and after each frame it reads back three pixels: the
  * middle, one near the top and one to the left of the middle (`__fakeXr.pixels`).
@@ -190,7 +192,7 @@ function fakeWebXr() {
   const f = 1 / Math.tan(Math.PI / 6);
   const projection = new Float32Array([f / (W / H), 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / (near - far), -1, 0, 0, (2 * far * near) / (near - far), 0]);
   const eye = [0, 1.5, 0];
-  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null, wallError: 0, box: null, light: 0.5 };
+  const state = { gl: null, session: null, init: null, anchors: new Map(), pixels: {}, camera: null, view: null, touch: null, wallError: 0, wallYaw: 0, hitGapFrom: null, box: null, light: 0.5 };
   window.__fakeXr = state;
   const norm = (v) => {
     const l = Math.hypot(...v);
@@ -223,10 +225,39 @@ function fakeWebXr() {
     { point: [0, 0, 0], normal: [0, 1, 0] },
   ];
   /** The phone's own idea of the room: the wall `wallError` metres in front of where it really is. */
-  const estimated = () => [
-    { point: [0, 0, -2 + state.wallError], normal: [0, 0, 1] },
-    { point: [0, 0, 0], normal: [0, 1, 0] },
-  ];
+  const estimated = () => {
+    const a = (state.wallYaw * Math.PI) / 180;
+    return [
+      { point: [0, 0, -2 + state.wallError], normal: [Math.sin(a), 0, Math.cos(a)] },
+      { point: [0, 0, 0], normal: [0, 1, 0] },
+    ];
+  };
+  /** A rotation matrix's quaternion (for poses' orientation). */
+  const quaternion = (m) => {
+    const [a, b, c, d, e, f2, g, h, i] = [m[0], m[4], m[8], m[1], m[5], m[9], m[2], m[6], m[10]];
+    const w = Math.sqrt(Math.max(0, 1 + a + e + i)) / 2;
+    const x = Math.sqrt(Math.max(0, 1 + a - e - i)) / 2;
+    const y = Math.sqrt(Math.max(0, 1 - a + e - i)) / 2;
+    const z = Math.sqrt(Math.max(0, 1 - a - e + i)) / 2;
+    return { x: Math.sign(h - f2) * x || x, y: Math.sign(c - g) * y || y, z: Math.sign(d - b) * z || z, w };
+  };
+  /** A pose's matrix from a position and a quaternion. */
+  const matrixOf = (p, q) => {
+    const { x, y, z, w } = q;
+    return new Float32Array([
+      1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0,
+      2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0,
+      2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0,
+      p.x, p.y, p.z, 1,
+    ]);
+  };
+  window.XRRigidTransform = class {
+    constructor(position = { x: 0, y: 0, z: 0 }, orientation = { x: 0, y: 0, z: 0, w: 1 }) {
+      this.position = position;
+      this.orientation = orientation;
+      this.matrix = matrixOf(position, orientation);
+    }
+  };
   /** How far along a ray (o + t·d) it meets a plane, or Infinity. */
   const meet = (o, d, plane) => {
     const facing = d[0] * plane.normal[0] + d[1] * plane.normal[1] + d[2] * plane.normal[2];
@@ -272,10 +303,11 @@ function fakeWebXr() {
     if (!best) return null;
     const at = o.map((c, i) => c + d[i] * best.t);
     const n = best.plane.normal;
-    const x = [1, 0, 0];
+    if (Math.abs(n[1]) < 0.5 && state.hitGapFrom !== null && at[0] > state.hitGapFrom) return null;
+    const x = Math.abs(n[1]) > 0.9 ? [1, 0, 0] : norm(cross([0, 1, 0], n));
     return new Float32Array([...x, 0, ...n, 0, ...cross(x, n), 0, ...at, 1]);
   };
-  const pose = (matrix, inverse = matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, inverse: { matrix: inverse } } });
+  const pose = (matrix, inverse = matrix) => ({ emulatedPosition: false, transform: { matrix, position: { x: matrix[12], y: matrix[13], z: matrix[14] }, orientation: quaternion(matrix), inverse: { matrix: inverse } } });
   const touchSpace = {};
   const inputSource = { targetRayMode: 'screen', targetRaySpace: touchSpace };
   // As in Chrome, only frames handed to requestAnimationFrame can give the phone's position; a
@@ -327,6 +359,11 @@ function fakeWebXr() {
       if (space === touchSpace) return state.touch ? pose(state.touch) : null;
       for (const [anchor, m] of state.anchors) if (anchor.anchorSpace === space) return pose(m);
       return null;
+    },
+    createAnchor: (at) => {
+      const anchor = { anchorSpace: {}, delete: () => state.anchors.delete(anchor) };
+      state.anchors.set(anchor, at.matrix);
+      return Promise.resolve(anchor);
     },
     trackedAnchors: new Set(state.anchors.keys()),
     detectedPlanes: new Set([{ orientation: 'vertical' }, { orientation: 'horizontal' }]),
@@ -1625,7 +1662,7 @@ export const scenarios = [
       await statusHas('Aiming at: wall, 2.00 m away', 5000);
       const init = await page.evaluate(() => window.__fakeXr.init);
       assert(init.requiredFeatures.includes('hit-test') && init.optionalFeatures.includes('anchors') && init.domOverlay, `asks for hit test, anchors and the overlay: ${JSON.stringify(init.optionalFeatures)}`);
-      await statusHas('Wall: aim the ring at one corner');
+      await statusHas('Wall: aim the ring at the middle of the wall');
 
       // Aimed at the floor in Wall mode: says so, and marks nothing.
       await aimAt([0, 0, -1]);
@@ -1633,9 +1670,10 @@ export const scenarios = [
       await statusHas("That's the floor, not a wall");
 
       // A wall 1.2 m wide and 1 m high, from (−0.6, 1.0) to (0.6, 2.0) on the wall. The phone puts
-      // the wall 5 cm in front of where it really is, as a real phone can.
+      // the wall 3 cm in front of where it really is and turned 4°, as a real phone can.
       await page.evaluate(() => {
-        window.__fakeXr.wallError = 0.05;
+        window.__fakeXr.wallError = 0.03;
+        window.__fakeXr.wallYaw = 4;
       });
       // Each tap comes with a jolt (the aim jumps as the finger lands): the corner is where the
       // aim was just before.
@@ -1647,15 +1685,18 @@ export const scenarios = [
         }, jolt);
         await frames();
       };
-      await aimAt([-0.6, 1.0, -1.95]);
+      // The corners are measured on the phone's own (turned) wall: 1.2 m apart along it.
+      const along = [Math.cos((4 * Math.PI) / 180), 0, -Math.sin((4 * Math.PI) / 180)];
+      const onEstimate = (x, y) => [x * along[0], y, -1.97 + x * along[2]];
+      await aimAt(onEstimate(-0.6, 1.0));
       await tapWithJolt([-0.45, 1.15, -1.95]);
       await statusHas('Now aim at the opposite corner');
-      await aimAt([0.6, 2.0, -1.95]);
+      await aimAt(onEstimate(0.6, 2.0));
       await shot('marking');
       await tapWithJolt([0.5, 2.1, -1.95]);
       await statusHas('Wall 1.20 × 1.00 m · Demo Ivory Bloom');
       await statusHas('Drag on the tiles to slide the pattern.');
-      await statusHas('Moved onto the wall by 5 cm (checked with depth).');
+      await statusHas('Checked with depth: turned 4° and moved 3 cm onto the wall.');
       await statusHas('Depth: on (60 × 80)');
       const wall = (await savedDesign()).wall;
       assert(wall.surface.widthMm === 1200 && wall.surface.heightMm === 1000, `the measured size is saved for the designer: ${JSON.stringify(wall.surface)}`);
@@ -1734,11 +1775,26 @@ export const scenarios = [
       await statusHas('Wall 1.10 × 0.90 m · Demo Azure Medallion');
       assert((await savedDesign()).wall.layout.seriesId === 'demo-azure-medallion', 'the series is saved');
 
-      // A plain wall by its base: two points where it meets the floor (just in front of the wall), then its top.
+      // Near a wall's edge the hit test finds nothing: the ring carries on along the wall found
+      // in its middle, and the corner can still be marked.
       await page.evaluate(() => {
         window.__fakeXr.wallError = 0;
+        window.__fakeXr.wallYaw = 0;
+        window.__fakeXr.hitGapFrom = 0.3;
       });
       await press(page, device, '.ar-controls button:text-is("Mark again")');
+      await aimAt([0, 1.5, -2]);
+      await statusHas('Aiming at: wall');
+      await aimAt([0.7, 1.2, -2]);
+      await statusHas('Aiming at: wall');
+      await tap();
+      await statusHas('Now aim at the opposite corner');
+      await press(page, device, '.ar-controls button:text-is("Start over")');
+      await page.evaluate(() => {
+        window.__fakeXr.hitGapFrom = null;
+      });
+
+      // A plain wall by its base: two points where it meets the floor (just in front of the wall), then its top.
       await press(page, device, '.ar-modes button:text-is("Wall by its base")');
       await statusHas('Plain wall: aim where the wall meets the floor');
       await aimAt([-0.8, 0, -1.95]);
@@ -1773,6 +1829,17 @@ export const scenarios = [
       assert(blue(picture.top), `the camera's picture at the top (${picture.top})`);
       assert(!blue(picture.centre) && picture.centre[0] > 120, `tiles in the middle (${picture.centre})`);
       assert((await page.locator('.ar-pictures button:text-is("Share")').count()) === 1, 'a Share button for it');
+      // The page scrolls down to it (it once couldn't, after Exit AR).
+      const scrolled = await page.evaluate(() => {
+        const screen = document.querySelector('.ar-screen');
+        screen.scrollTop = screen.scrollHeight;
+        const share = document.querySelector('.ar-pictures button').getBoundingClientRect();
+        return { top: screen.scrollTop, fits: screen.scrollHeight <= screen.clientHeight, shareBottom: share.bottom, height: innerHeight };
+      });
+      assert((scrolled.top > 0 || scrolled.fits) && scrolled.shareBottom <= scrolled.height, `scrolls down to Share: ${JSON.stringify(scrolled)}`);
+      await page.evaluate(() => {
+        document.querySelector('.ar-screen').scrollTop = 0;
+      });
       await shot('report');
       await page.goto(new URL('./?debug=1&tab=count', page.url()).href);
       await page.waitForSelector('body[data-ready="true"]', { timeout: 10000 });

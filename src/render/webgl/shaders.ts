@@ -110,7 +110,7 @@ void main() {
 /**
  * AR: a tile's texture with grout, over the camera picture, except where the phone's depth
  * sensor sees something real in front of it (a foot, a basin): there the tile isn't drawn.
- * u_depthMode: 0 no depth; 1 two bytes per reading (luminance-alpha or unsigned-short); 2 float.
+ * u_depth holds the depth picture in metres (0 where there's no reading); u_depthMode is 0 without one.
  */
 export const AR_TILE_FRAGMENT = `#version 300 es
 precision highp float;
@@ -119,7 +119,6 @@ uniform vec3 u_grout;
 uniform float u_groutMm;
 uniform sampler2D u_depth;
 uniform mat4 u_depthUv;
-uniform float u_rawToMeters;
 uniform vec4 u_viewport;
 uniform int u_depthMode;
 uniform vec3 u_light;
@@ -130,23 +129,38 @@ flat in vec4 v_joints;
 in float v_depth;
 out vec4 outColor;
 ${GROUT}
-/** The real world's depth (metres) at this pixel, or 0 where the sensor has no reading. */
+/**
+ * The real world's depth (metres) at this pixel, or 0 where the sensor has no reading: blended
+ * from the four nearest readings (leaving out missing ones), so edges are smooth, not blocky.
+ */
 float realDepth() {
   // Normalised view coordinates run from the view's top-left; the framebuffer's rows from its bottom.
   vec2 view = vec2((gl_FragCoord.x - u_viewport.x) / u_viewport.z, 1.0 - (gl_FragCoord.y - u_viewport.y) / u_viewport.w);
   vec2 uv = (u_depthUv * vec4(view, 0.0, 1.0)).xy;
-  if (u_depthMode == 1) {
-    vec2 bytes = texture(u_depth, uv).rg;
-    return (bytes.r * 255.0 + bytes.g * 255.0 * 256.0) * u_rawToMeters;
+  ivec2 size = textureSize(u_depth, 0);
+  vec2 at = uv * vec2(size) - 0.5;
+  ivec2 base = ivec2(floor(at));
+  vec2 f = at - floor(at);
+  float sum = 0.0;
+  float weight = 0.0;
+  for (int dy = 0; dy <= 1; dy++) {
+    for (int dx = 0; dx <= 1; dx++) {
+      float d = texelFetch(u_depth, clamp(base + ivec2(dx, dy), ivec2(0), size - 1), 0).r;
+      float w = (dx == 1 ? f.x : 1.0 - f.x) * (dy == 1 ? f.y : 1.0 - f.y);
+      if (d > 0.0) {
+        sum += d * w;
+        weight += w;
+      }
+    }
   }
-  return texture(u_depth, uv).r * u_rawToMeters;
+  return weight > 0.0 ? sum / weight : 0.0;
 }
 void main() {
   float shown = 1.0;
   if (u_depthMode > 0) {
     float real = realDepth();
-    // Up to 3 cm in front is the wall itself (the sensor's noise); 7 cm or more is a thing in front.
-    if (real > 0.0) shown = smoothstep(-0.07, -0.03, real - v_depth);
+    // Up to 4 cm in front is the surface itself (the sensor's noise); 9 cm or more is a thing in front.
+    if (real > 0.0) shown = smoothstep(-0.09, -0.04, real - v_depth);
   }
   if (shown <= 0.0) discard;
   vec3 colour = texture(u_tile, v_uv).rgb;

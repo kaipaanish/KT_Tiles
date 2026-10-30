@@ -35,10 +35,8 @@ export interface ArScene {
 export interface ArDepth {
   width: number;
   height: number;
-  /** Raw readings, row by row from the picture's top-left: two bytes each, or 32-bit floats. */
-  data: ArrayBuffer;
-  float: boolean;
-  rawToMeters: number;
+  /** Depth in metres, row by row from the picture's top-left; 0 where there's no reading. */
+  metres: Float32Array;
   /** Normalised view coordinates → normalised depth-picture coordinates, column-major. */
   uvMatrix: Float32Array;
   /** The view's viewport in the framebuffer: x, y, width, height. */
@@ -54,7 +52,6 @@ interface TileLocations extends MeshAttributes {
   groutMm: WebGLUniformLocation | null;
   depth: WebGLUniformLocation | null;
   depthUv: WebGLUniformLocation | null;
-  rawToMeters: WebGLUniformLocation | null;
   viewportAt: WebGLUniformLocation | null;
   depthMode: WebGLUniformLocation | null;
   light: WebGLUniformLocation | null;
@@ -104,7 +101,6 @@ export class ArRenderer {
         groutMm: gl.getUniformLocation(p, 'u_groutMm'),
         depth: gl.getUniformLocation(p, 'u_depth'),
         depthUv: gl.getUniformLocation(p, 'u_depthUv'),
-        rawToMeters: gl.getUniformLocation(p, 'u_rawToMeters'),
         viewportAt: gl.getUniformLocation(p, 'u_viewport'),
         depthMode: gl.getUniformLocation(p, 'u_depthMode'),
         light: gl.getUniformLocation(p, 'u_light'),
@@ -164,12 +160,11 @@ export class ArRenderer {
       gl.uniform1i(at.tile, 0);
       gl.uniform3fv(at.light, look.light ?? [1, 1, 1]);
       gl.uniform1i(at.depth, 1);
-      gl.uniform1i(at.depthMode, depth ? (depth.float ? 2 : 1) : 0);
+      gl.uniform1i(at.depthMode, depth ? 1 : 0);
       if (depth) {
         gl.activeTexture(gl.TEXTURE1);
         this.uploadDepth(depth);
         gl.uniformMatrix4fv(at.depthUv, false, depth.uvMatrix);
-        gl.uniform1f(at.rawToMeters, depth.rawToMeters);
         gl.uniform4fv(at.viewportAt, depth.viewport);
       }
       gl.activeTexture(gl.TEXTURE0);
@@ -216,16 +211,15 @@ export class ArRenderer {
   }
 
   /**
-   * The depth picture as a texture, read exactly (no blending between readings: two bytes of one
-   * reading blended with another's would be nonsense).
+   * The depth picture as a float texture. The shader blends the readings itself (leaving out
+   * missing ones), so the texture is read exactly.
    */
   private uploadDepth(depth: ArDepth): void {
     const gl = this.gl;
     this.depthTexture ??= gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.depthTexture);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (depth.float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, depth.width, depth.height, 0, gl.RED, gl.FLOAT, new Float32Array(depth.data));
-    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, depth.width, depth.height, 0, gl.RG, gl.UNSIGNED_BYTE, new Uint8Array(depth.data));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, depth.width, depth.height, 0, gl.RED, gl.FLOAT, depth.metres);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

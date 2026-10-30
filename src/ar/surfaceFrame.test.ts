@@ -29,6 +29,18 @@ describe('a surface found in AR', () => {
     close(frame.origin, [0.3, 1.2, -2]);
   });
 
+  it('keeps walls plumb and floors level, whatever tilt the estimate has', () => {
+    // A wall estimate leaning 8° back, and a floor estimate tilted 6°.
+    const lean = (8 * Math.PI) / 180;
+    const wall = surfaceFrame(pose([1, 0, 0], [0, Math.sin(lean), Math.cos(lean)], [0, -Math.cos(lean), Math.sin(lean)], [0, 1.2, -2]), viewer);
+    expect(wall.kind).toBe('wall');
+    close(wall.normal, [0, 0, 1]);
+    close(wall.up, [0, 1, 0]);
+    const tilt = (6 * Math.PI) / 180;
+    const floor = surfaceFrame(pose([1, 0, 0], [Math.sin(tilt), Math.cos(tilt), 0], [0, 0, 1], [0, 0, -2]), viewer);
+    close(floor.normal, [0, 1, 0]);
+  });
+
   it('turns a normal pointing into the wall to face the viewer', () => {
     const frame = surfaceFrame(pose([1, 0, 0], [0, 0, -1], [0, 1, 0], [0, 1.2, -2]), viewer);
     close(frame.normal, [0, 0, 1]);

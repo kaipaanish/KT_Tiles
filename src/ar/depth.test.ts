@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { distanceToPlane, fromDepth, samplePoints, shifted, surfaceOffset, toNormView } from './depth';
+import { checkWithDepth, distanceToPlane, fromDepth, samplePoints, shifted, surfaceOffset, toNormView } from './depth';
 import { wallFromCorners } from './marking';
 import { surfaceFrame, type Vec3 } from './surfaceFrame';
 
@@ -67,5 +67,48 @@ describe('the real surface against a marked one', () => {
 
   it('measures the straight distance to a surface, not along the line of sight', () => {
     expect(distanceToPlane([0.8, 1.5, 0], marked.frame)).toBeCloseTo(2, 6);
+  });
+});
+
+describe('checking a marked wall with depth', () => {
+  const hit = Float32Array.from([1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, -0.6, 1.0, -2, 1]);
+  const marked = wallFromCorners(surfaceFrame(hit, viewer), [0.6, 2.0, -2])!;
+  /** Readings across the marked area of a real wall through (0, 1.5, z0), turned `deg` about the vertical; some noise and a few things in front. */
+  const readings = (deg: number, z0: number, noise = 0.003): Vec3[] => {
+    const a = (deg * Math.PI) / 180;
+    let seed = 3;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2 * noise;
+    const points: Vec3[] = [];
+    for (let i = 0; i < 12; i++) {
+      for (let j = 0; j < 8; j++) {
+        const x = -0.55 + (1.1 * i) / 11;
+        const y = 1.05 + (0.9 * j) / 7;
+        // On the turned wall: z changes along x by tan(a).
+        points.push([x, y, z0 + x * Math.tan(a) + rand()]);
+      }
+    }
+    // A hand 30 cm in front.
+    for (let k = 0; k < 6; k++) points.push([0.1 * k - 0.3, 1.4, z0 + 0.3]);
+    return points;
+  };
+
+  it('turns and moves the wall onto the readings, keeping it plumb and its size', () => {
+    const check = checkWithDepth(readings(5, -2.03), marked);
+    expect(check.ok).toBe(true);
+    if (!check.ok) return;
+    expect(check.turnDeg).toBeCloseTo(5, 0);
+    expect(check.moveM).toBeCloseTo(-0.03, 2);
+    expect(check.surface.frame.up).toEqual([0, 1, 0]);
+    expect(check.surface.widthMm).toBe(marked.widthMm);
+    // The corrected wall faces the real one: its normal turned 5° about the vertical.
+    const n = check.surface.frame.normal;
+    expect(Math.atan2(-n[0], n[2]) * (180 / Math.PI)).toBeCloseTo(5, 0);
+  });
+
+  it("doesn't trust readings that spread widely, or that call for a large correction", () => {
+    expect(checkWithDepth(readings(0, -2, 0.08), marked)).toMatchObject({ ok: false, reason: 'uncertain' });
+    expect(checkWithDepth(readings(0, -1.9), marked)).toMatchObject({ ok: false, reason: 'large' });
+    expect(checkWithDepth(readings(15, -2), marked)).toMatchObject({ ok: false, reason: 'large' });
+    expect(checkWithDepth(readings(0, -2).slice(0, 20), marked)).toMatchObject({ ok: false, reason: 'few' });
   });
 });

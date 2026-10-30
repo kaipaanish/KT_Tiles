@@ -57,6 +57,11 @@ export function surfaceFrame(pose: ArrayLike<number>, viewer: Vec3): SurfaceFram
   let normal = normalise([pose[4]!, pose[5]!, pose[6]!]);
   if (dot(normal, sub(viewer, origin)) < 0) normal = scale(normal, -1);
   const kind = kindOf(normal);
+  // Walls are plumb and floors and ceilings level: the phone's estimate of a plain surface can be
+  // tilted a few degrees, which would lift the tiles off it away from the corner that was hit.
+  if (kind === 'wall') normal = normalise([normal[0], 0, normal[2]]);
+  else if (kind === 'floor') normal = [0, 1, 0];
+  else if (kind === 'ceiling') normal = [0, -1, 0];
   let up: Vec3;
   if (kind === 'wall' || kind === 'slope') {
     up = sub(WORLD_UP, scale(normal, dot(WORLD_UP, normal)));

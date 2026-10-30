@@ -20,10 +20,10 @@ import { DESIGN_KEY, serializeDesign, writeStorage } from '../state/persist';
 import { openingDesign } from '../ui/app';
 import { h } from '../ui/dom';
 import { photoShareContent, sharePhoto, type ShareContent } from '../ui/share';
-import { distanceToPlane, fromDepth, samplePoints, shifted, surfaceOffset, toNormView } from './depth';
+import { checkWithDepth, distanceToPlane, fromDepth, samplePoints, toNormView, type DepthCheck } from './depth';
 import { surfaceLight, tileGain } from './lighting';
 import { cornersMm, floorFromCorners, intersectPlane, moveCorner, nearestCorner, poseRay, rectOn, ringOn, steadyAim, surfaceMm, wallFromBase, wallFromCorners, wallUpTo, type MarkedSurface, type Ray } from './marking';
-import { invertPose, multiply, surfaceFrame, surfaceToRoom, transformPoint, type SurfaceFrame, type SurfaceKind, type Vec3 } from './surfaceFrame';
+import { dot, invertPose, multiply, surfaceFrame, surfaceToRoom, transformPoint, type SurfaceFrame, type SurfaceKind, type Vec3 } from './surfaceFrame';
 import { checkArSupport, startArSession } from './xrSession';
 
 /** The aiming ring's radius, and a marked corner's, in metres. */
@@ -35,6 +35,13 @@ const LIGHT_AMOUNT = 0.6;
 const GRAB_MM = 200;
 /** AR pictures are kept at most this many pixels on their long side. */
 const PICTURE_SIDE = 1600;
+/** Where the hit test finds nothing (a wall's edges and corners), the ring carries on along the last wall or floor it found, for this long (ms). */
+const CARRY_ON_MS = 10_000;
+/** Sweeping onto a surface turned more than 30° within this long (ms) keeps to the first: at a room's corner, the next wall. */
+const KEEP_TO_MS = 1_500;
+const TURNED_COS = Math.cos((30 * Math.PI) / 180);
+/** A hit this much nearer (metres) than where the ring would carry on is something in front of it. */
+const IN_FRONT_M = 0.15;
 /** How close (mm) a dragged pattern must come to a magnet to jump to it. */
 const MAGNET_MM = 40;
 
@@ -67,7 +74,7 @@ type Step =
 
 const INSTRUCTIONS: Record<Mode, Record<string, string>> = {
   wall: {
-    first: 'Wall: aim the ring at one corner of the area to tile (bottom-left, say) and tap.',
+    first: 'Wall: aim the ring at the middle of the wall, then move it to one corner of the area to tile (bottom-left, say) and tap. The ring carries on along the wall into its corners.',
     'wall-second': 'Now aim at the opposite corner (top-right) and tap.',
   },
   floor: {
@@ -237,6 +244,12 @@ export function startAr(root: HTMLElement): void {
     let saved = 0;
     /** Depth readings on the marked surface, gathered over a few frames after it is tiled, to move it onto the real one. */
     let snap: { frames: number; points: Vec3[] } | null = null;
+    /** The depth picture, smoothed over a few frames so things in front don't flicker. */
+    let smoothDepth: Float32Array | null = null;
+    /** The last wall or floor the hit test found (for the ring to carry on along), and when. */
+    let lastPlane: { frame: SurfaceFrame; orientation: DOMPointReadOnly; seen: number } | null = null;
+    /** Where the ring is before the first corner: on a hit, or carried on along lastPlane. */
+    let firstAim: { frame: SurfaceFrame; fromHit: boolean } | null = null;
     let depthReport = xr.depthUsage ? 'on' : 'not available on this phone';
 
     // ---- The design on the marked surface
@@ -283,6 +296,7 @@ export function startAr(root: HTMLElement): void {
       result = null;
       drag = null;
       adjusting = false;
+      lastPlane = null;
       step = { step: 'first' };
       renderer.keep([]);
       renderControls();
@@ -348,6 +362,7 @@ export function startAr(root: HTMLElement): void {
 
     function setMode(next: Mode): void {
       mode = next;
+      lastPlane = null;
       renderControls();
     }
 
@@ -428,16 +443,14 @@ export function startAr(root: HTMLElement): void {
         return;
       }
       if (step.step === 'first') {
-        const hit = hitSource ? eventFrame.getHitTestResults(hitSource)[0] : undefined;
-        const pose = hit?.getPose(room);
-        if (!hit || !pose) {
+        const chosen = firstAim;
+        if (!chosen) {
           message = 'No surface under the ring yet: move the phone slowly over it.';
           return;
         }
-        const hitFrame = surfaceFrame(pose.transform.matrix, viewer);
-        // The corner where the aim was just before the tap, on the surface the hit found.
+        // The corner where the aim was just before the tap, on the surface the ring is on.
         const steady = steadyPoint(at);
-        const frame = steady ? { ...hitFrame, origin: onPlane(steady, hitFrame) } : hitFrame;
+        const frame = steady ? { ...chosen.frame, origin: onPlane(steady, chosen.frame) } : chosen.frame;
         const wanted = mode === 'wall' ? 'wall' : 'floor';
         if (frame.kind !== wanted) {
           message =
@@ -447,18 +460,7 @@ export function startAr(root: HTMLElement): void {
           return;
         }
         message = '';
-        // The surface rides on an anchor here, so it stays put as tracking improves.
-        anchorPose = Float32Array.from(pose.transform.matrix);
-        hit.createAnchor?.().then(
-          (made) => {
-            if (step.step === 'first') {
-              made.delete();
-              return;
-            }
-            anchor = made;
-          },
-          () => {},
-        );
+        anchorAt(eventFrame, frame, chosen.fromHit);
         if (mode === 'wall') step = { step: 'wall-second', first: frame };
         else if (mode === 'floor') step = { step: 'floor-second', a: frame.origin, normal: frame.normal };
         else step = { step: 'base-second', a: frame.origin };
@@ -495,6 +497,66 @@ export function startAr(root: HTMLElement): void {
         if (wall) tile(wall);
         else message = 'Aim higher up the wall.';
       }
+    }
+
+    /**
+     * The surface rides on an anchor at its first corner, so it stays put as tracking improves:
+     * one on the plane the hit test found where there is a hit (it follows the plane as the phone
+     * refines it), else one at the corner itself.
+     */
+    function anchorAt(eventFrame: XRFrame, frame: SurfaceFrame, fromHit: boolean): void {
+      const keep = (made: XRAnchor) => {
+        if (step.step === 'first') {
+          made.delete();
+          return;
+        }
+        anchor = made;
+      };
+      const hit = fromHit && hitSource ? eventFrame.getHitTestResults(hitSource)[0] : undefined;
+      const hitPose = hit?.getPose(room);
+      if (hit?.createAnchor && hitPose) {
+        anchorPose = Float32Array.from(hitPose.transform.matrix);
+        hit.createAnchor().then(keep, () => {});
+        return;
+      }
+      if (!lastPlane || typeof XRRigidTransform === 'undefined' || !eventFrame.createAnchor) {
+        anchorPose = null;
+        return;
+      }
+      const [x, y, z] = frame.origin;
+      const at = new XRRigidTransform({ x, y, z, w: 1 }, lastPlane.orientation);
+      anchorPose = Float32Array.from(at.matrix);
+      eventFrame.createAnchor(at, room).then(keep, () => {});
+    }
+
+    /**
+     * Where the ring goes before the first corner: on what the hit test finds, or, where it finds
+     * nothing or the wrong kind of surface (a wall's edges and corners, the floor at its foot),
+     * carried on along the last wall or floor it found. Sweeping quickly from a wall onto one
+     * turned from it (the next wall, at a room's corner) keeps to the first.
+     */
+    function aimFirst(frame: XRFrame, time: number): { frame: SurfaceFrame; fromHit: boolean } | null {
+      const wanted = mode === 'wall' ? 'wall' : 'floor';
+      const hit = hitSource ? frame.getHitTestResults(hitSource)[0] : undefined;
+      const pose = hit?.getPose(room);
+      const found = pose ? surfaceFrame(pose.transform.matrix, viewer) : null;
+      const recent = lastPlane && time - lastPlane.seen < CARRY_ON_MS ? lastPlane : null;
+      if (found && pose && found.kind === wanted) {
+        const turned = recent && dot(found.normal, recent.frame.normal) < TURNED_COS && time - recent.seen < KEEP_TO_MS;
+        if (!turned) {
+          lastPlane = { frame: found, orientation: pose.transform.orientation, seen: time };
+          return { frame: found, fromHit: true };
+        }
+      }
+      if (recent && aimRay) {
+        const p = intersectPlane(aimRay, recent.frame.origin, recent.frame.normal);
+        const away = (q: Vec3) => Math.hypot(q[0] - viewer[0], q[1] - viewer[1], q[2] - viewer[2]);
+        // Not where something real is clearly in front of it (the floor before the wall, the
+        // next wall past a room's corner): only into the wall's edges and corners, and its foot.
+        const hidden = p && found && away(found.origin) < away(p) - IN_FRONT_M;
+        if (p && !hidden && away(p) < 6) return { frame: { ...recent.frame, origin: p }, fromHit: false };
+      }
+      return found ? { frame: found, fromHit: true } : null;
     }
 
     /** A point brought onto a surface's plane. */
@@ -602,11 +664,9 @@ export function startAr(root: HTMLElement): void {
       const rects: ArRect[] = [];
       aim = null;
       if (step.step === 'first') {
-        const hit = hitSource ? frame.getHitTestResults(hitSource)[0] : undefined;
-        const hitPose = hit?.getPose(room);
-        if (hitPose) {
-          const m = hitPose.transform.matrix;
-          const surface = surfaceFrame(m, viewer);
+        firstAim = aimFirst(frame, time);
+        if (firstAim) {
+          const surface = firstAim.frame;
           aim = { kind: surface.kind, distance: distanceToPlane(viewer, surface) };
           rings.push({ model: ringOn(surface, surface.origin, AIM_M), colour: COLOURS[surface.kind] });
           remember(time, surface.origin);
@@ -722,6 +782,10 @@ export function startAr(root: HTMLElement): void {
       pictures.push({ canvas, content: photoShareContent([{ name: kind === 'wall' ? 'Wall' : 'Floor', plan: activePlan(doc), result }], catalog, doc.settings.allowancePct) });
       message = `Picture taken (${pictures.length}): share it after Exit AR.`;
       registered();
+      // A shutter's flash: the phone may not buzz (Chrome or battery saver can stop it).
+      const flash = h('div', { class: 'ar-flash' });
+      overlay.append(flash);
+      window.setTimeout(() => flash.remove(), 400);
     }
 
     /** A view's depth picture from the depth sensor, where the phone has one. */
@@ -730,12 +794,19 @@ export function startAr(root: HTMLElement): void {
       try {
         const info = frame.getDepthInformation(view);
         if (!info) return null;
+        // In metres, eased over frames: a reading that jumps (something moved) follows faster.
+        const raw = xr.depthDataFormat === 'float32' ? new Float32Array(info.data) : new Uint16Array(info.data);
+        const n = info.width * info.height;
+        if (!smoothDepth || smoothDepth.length !== n) smoothDepth = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const d = raw[i]! * info.rawValueToMeters;
+          const old = smoothDepth[i]!;
+          smoothDepth[i] = d <= 0 ? 0 : old <= 0 ? d : old + (d - old) * (Math.abs(d - old) > 0.25 ? 0.6 : 0.35);
+        }
         const picture: ArDepth = {
           width: info.width,
           height: info.height,
-          data: info.data,
-          float: xr.depthDataFormat === 'float32',
-          rawToMeters: info.rawValueToMeters,
+          metres: smoothDepth,
           uvMatrix: info.normDepthBufferFromNormView.matrix,
           viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
         };
@@ -762,20 +833,32 @@ export function startAr(root: HTMLElement): void {
         if (depth > 0) snap.points.push(fromDepth(view.projectionMatrix, view.transform.matrix, seen.x, seen.y, depth));
       }
       if (++snap.frames < 15) return;
-      const offset = surfaceOffset(snap.points, surface.frame);
+      const check = checkWithDepth(snap.points, surface);
       snap = null;
       const word = surface.kind === 'wall' ? 'wall' : 'floor';
-      if (offset === null) {
-        message = `Couldn't check the ${word} with depth: keep it in view.`;
+      if (!check.ok) {
+        message =
+          check.reason === 'few'
+            ? `Couldn't check the ${word} with depth: keep it in view.`
+            : check.reason === 'uncertain'
+              ? `Depth too unsure here (readings spread ${((check.spread ?? 0) * 100).toFixed(1)} cm): kept the phone's own ${word}.`
+              : `Depth disagreed too much (${correction(check)}): kept the phone's own ${word}.`;
         return;
       }
-      const cm = Math.round(Math.abs(offset) * 100);
-      if (Math.abs(offset) < 0.005) {
+      if (check.turnDeg < 1 && Math.abs(check.moveM) < 0.005) {
         message = `Checked with depth: the tiles sit on the ${word}.`;
         return;
       }
-      place(shifted(surface, offset));
-      message = `Moved onto the ${word} by ${cm} cm (checked with depth).`;
+      place(check.surface);
+      message = `Checked with depth: ${correction(check)} onto the ${word}.`;
+    }
+
+    /** "turned 4° and moved 2 cm", leaving out what is too small to mention. */
+    function correction(check: DepthCheck): string {
+      const parts: string[] = [];
+      if ((check.turnDeg ?? 0) >= 1) parts.push(`turned ${Math.round(check.turnDeg ?? 0)}°`);
+      if (Math.abs(check.moveM ?? 0) >= 0.005) parts.push(`moved ${Math.round(Math.abs(check.moveM ?? 0) * 100)} cm`);
+      return parts.join(' and ') || 'a little';
     }
 
     /** The plane being marked, for drawing rings on it. */
